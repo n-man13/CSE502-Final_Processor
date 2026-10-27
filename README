@@ -1,0 +1,88 @@
+CSE 502 -- building a RISC-V core in SystemVerilog
+
+1. Setup
+
+   git clone /opt/shared/cse502/git wp1
+   cd wp1
+   make            # verilate + compile   -> obj_dir/Vtop
+   make run        # run PROG (see Makefile) on your core
+
+   Put the course tools on your PATH (add to ~/.bashrc):
+
+   source /opt/shared/profile
+
+   That gives you riscv64-unknown-linux-gnu-{gcc,ld,objdump,...} and the surfer
+   waveform viewer.
+
+2. Running programs
+
+   make run PROG=/opt/shared/cse502/tests/wp1/prog1
+   make run PROG="/opt/shared/cse502/tests/project/prog2 100"     # program arguments
+
+   Arguments starting with '+' are Verilator plusargs and are not passed on to
+   the program, so your design can read them with $test$plusargs / $value$plusargs:
+
+   cd obj_dir && ./Vtop +yourflag /opt/shared/cse502/tests/wp1/prog1
+
+   Test programs live in /opt/shared/cse502/tests/{wp1,wp2,project}.
+   wp1: bare functions linked at address 0.
+   wp2: stripped object files that only use registers.  project: static
+   Linux (glibc) binaries; prog5 is a chess engine you play over stdin.
+
+   The testbench (main.cpp, system.cpp, fake-os.cpp) is the machine your core
+   runs in.  It loads the ELF into a 1 GiB DRAM simulated by DRAMSim2, sets up
+   argc/argv on the stack, and hands you (top.sv ports):
+
+     entry     address of the first instruction
+     stackptr  initial stack pointer; argc is at 0(sp), argv follows
+     satp      page-table root (only with HAVETLB=y)
+     m_axi_*   AXI4 master port to memory.  Memory is accessed in 64-byte lines:
+               reads are 8-beat WRAP bursts (arlen=7, arsize=3, arburst=2), writes
+               8-beat INCR bursts (awburst=1); every *ready input is always 1, and
+               a second request for a line that is still outstanding is ignored.
+     m_axi_ac* snoop channel: after a system call modified memory you get one
+               "MakeInvalid" per changed line -- drop your cached copy.
+
+   and three DPI functions (Sysbus.defs):
+
+     do_ecall(a7, a0..a6, &a0)   run a system call on the host ("fake OS")
+     do_pending_write(addr,val,size)  call when you commit a store, so the fake
+                                 OS sees data that has not reached DRAM yet
+     do_finish_write             called by the testbench when your write lands
+
+   Environment variables: HAVETLB=y enables paging, SHOWCONSOLE=1 an ncurses
+   console.  FULLSYSTEM=y (booting Linux) is not used this year.
+
+   Conventions the tests assume: sp = stackptr at reset; the program is over when
+   it calls exit (ecall) or when an all-zero instruction word is fetched (wp1).
+
+   Note: the cycle count depends slightly on where you run Vtop from, because
+   the C library asks the (host) operating system for the path of the running
+   program during startup.  Compare runs from the same directory.
+
+3. Waveforms
+
+   TRACE=--trace (the default) writes trace.vcd next to the Makefile.  It is
+   slow and large; build with `make TRACE=` when you do not need it.
+
+     gtkwave trace.vcd            (ssh -X/-Y)
+     /opt/shared/bin/surfer trace.vcd
+
+4. Your own test programs
+
+   mktest/ shows how the wp1 tests are built (make in that directory).  For
+   Linux programs: riscv64-unknown-linux-gnu-gcc -static -march=rv64im -mabi=lp64
+   (the libc is soft-float and has no compressed instructions, so a binary only
+   needs RV64IMA).
+
+5. Submitting
+
+   make submit ASSIGNMENT=wp1
+   make submit ASSIGNMENT=wp2
+   make submit ASSIGNMENT=project POINTS=<n> TLB=<y|n> BP=<y|n>
+
+   For the project you must say how many points you are claiming, and whether
+   your core has a TLB (runs with HAVETLB=y) and a branch predictor.  The
+   directory (without obj_dir, traces, .git) is copied to /submit/<assignment>
+   together with a SUBMIT file recording those answers; the previous two
+   submissions are kept as .1 and .2.  The last one before the deadline is graded.

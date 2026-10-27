@@ -1,0 +1,428 @@
+`include "Sysbus.defs"
+
+module decoder (
+	output string       codeword,
+	output logic [4:0] rd,
+	output logic       has_rd,
+	input  logic [31:0] instr
+);
+	logic [6:0] opcode;
+	logic [2:0] funct3;
+	logic [6:0] funct7;
+
+	typedef enum logic [4:0] { // Only the 5 MSB matter to determine opcode type in a 32bit ISA (ref table: p603 Chp 36)
+		LOAD = 5'b00_000,
+		LOAD_FP = 5'b00_001,
+		MISC_MEM = 5'b00_011,
+		OP_IMM = 5'b00_100,
+		AUIPC = 5'b00_101,
+		OP_IMM_32 = 5'b00_110,
+		
+		STORE = 5'b01_000,
+		STORE_FP = 5'b01_001,
+		AMO = 5'b01_011,
+		OP = 5'b01_100,
+		LUI = 5'b01_101,
+		OP_32 = 5'b01_110,
+
+		MADD = 5'b10_000,
+		MSUB = 5'b10_001,
+		NMSUB = 5'b10_010,
+		NMADD = 5'b10_011,
+		OP_FP = 5'b10_100,
+		OP_V = 5'b10_101,
+		
+		BRANCH = 5'b11_000,
+		JALR = 5'b11_001,
+		JAL = 5'b11_011,
+		SYSTEM = 5'b11_100,
+		OP_VE = 5'b11_101
+		
+	} opcode_t;
+
+	always_comb begin
+		opcode = instr[6:0];
+		rd = instr[11:7];
+		funct3 = instr[14:12];
+		funct7 = instr[31:25];
+
+		has_rd = 1'b0;
+		codeword = "unknown";
+
+		case (opcode[6:2])
+			// add all the cases for each opcode filling in what
+			// codeword, and whether it has rd
+			// RV32I
+			LUI: begin codeword = "LUI"; has_rd = 1'b1; end
+			AUIPC: begin codeword = "AUIPC"; has_rd = 1'b1; end
+			JAL: begin codeword = "JAL"; has_rd = 1'b1; end
+			JALR: begin
+				if (funct3 == 3'b000) begin
+					codeword = "JALR";
+					has_rd = 1'b1;
+				end else begin
+					codeword = "unknown";
+					has_rd = 1'b0;
+				end
+			end
+			BRANCH: begin
+				has_rd = 1'b0;
+				case (funct3)
+					3'b000: codeword = "BEQ";
+					3'b001: codeword = "BNE";
+					3'b100: codeword = "BLT";
+					3'b101: codeword = "BGE";
+					3'b110: codeword = "BLTU";
+					3'b111: codeword = "BGEU";
+					default: codeword = "unknown";
+				endcase
+			end
+			LOAD: begin
+				has_rd = 1'b1;
+				case (funct3)
+					3'b000: codeword = "LB";
+					3'b001: codeword = "LH";
+					3'b010: codeword = "LW";
+					3'b100: codeword = "LBU";
+					3'b101: codeword = "LHU";
+					// RV64I
+					3'b110: codeword = "LWU";
+					3'b011: codeword = "LD";
+					default: codeword = "unknown";
+				endcase
+			end
+			STORE: begin
+				has_rd = 1'b0;
+				case (funct3)
+					3'b000: codeword = "SB";
+					3'b001: codeword = "SH";
+					3'b010: codeword = "SW";
+					// RV64I
+					3'b011: codeword = "SD";
+					default: codeword = "unknown";
+				endcase
+			end
+			OP_IMM: begin
+				has_rd = 1'b1;
+				case (funct3)
+					// RV32I
+					3'b000: codeword = "ADDI";
+					3'b010: codeword = "SLTI";
+					3'b011: codeword = "SLTIU";
+					3'b100: codeword = "XORI";
+					3'b110: codeword = "ORI";
+					3'b111: codeword = "ANDI";
+					// RV32I / RV64I
+					3'b001: begin
+						case (funct7)
+							7'b0000000: codeword = "SLLI";
+							default: codeword = "unknown";
+						endcase
+					end
+					3'b101: begin
+						case (funct7)
+							7'b0000000: codeword = "SRLI";
+							7'b0100000: codeword = "SRAI";
+							default: codeword = "unknown";
+						endcase
+					end
+					default: codeword = "unknown";
+				endcase
+			end
+			OP: begin
+				has_rd = 1'b1;
+				// RV32I
+				if (funct7 != 7'b0000001) begin
+					case (funct3)
+						3'b000: begin
+							case (funct7)
+								7'b0000000: codeword = "ADD";
+								7'b0100000: codeword = "SUB";
+								default: codeword = "unknown";
+							endcase
+						end
+						3'b001: codeword = "SLL";
+						3'b010: codeword = "SLT";
+						3'b011: codeword = "SLTU";
+						3'b100: codeword = "XOR";
+						3'b101: begin
+							case (funct7)
+								7'b0000000: codeword = "SRL";
+								7'b0100000: codeword = "SRA";
+								default: codeword = "unknown";
+							endcase
+						end
+						3'b110: codeword = "OR";
+						3'b111: codeword = "AND";
+						default: codeword = "unknown";
+					endcase
+				end else begin
+					// RV32M
+					case (funct3)
+						3'b000: codeword = "MUL";
+						3'b001: codeword = "MULH";
+						3'b010: codeword = "MULHSU";
+						3'b011: codeword = "MULHU";
+						3'b100: codeword = "DIV";
+						3'b101: codeword = "DIVU";
+						3'b110: codeword = "REM";
+						3'b111: codeword = "REMU";
+						default: codeword = "unknown";
+					endcase
+				end
+			end
+
+			OP_IMM_32: begin
+				has_rd = 1'b1;
+				// RV64I
+				case (funct3)
+					3'b000: codeword = "ADDIW";
+					3'b001: begin
+						case (funct7)
+							7'b0000000: codeword = "SLLIW";
+							default: codeword = "unknown";
+						endcase
+					end
+					3'b101: begin
+						case (funct7)
+							7'b0000000: codeword = "SRLIW";
+							7'b0100000: codeword = "SRAIW";
+							default: codeword = "unknown";
+						endcase
+					end
+					default: codeword = "unknown";
+				endcase
+			end
+			OP_32: begin
+				has_rd = 1'b1;
+				// RV64I
+				if (funct7 != 7'b0000001) begin
+					case (funct3)
+						3'b000: begin
+							case (funct7)
+								7'b0000000: codeword = "ADDW";
+								7'b0100000: codeword = "SUBW";
+								default: codeword = "unknown";
+							endcase
+						end
+						3'b001: codeword = "SLLW";
+						3'b101: begin
+							case (funct7)
+								7'b0000000: codeword = "SRLW";
+								7'b0100000: codeword = "SRAW";
+								default: codeword = "unknown";
+							endcase
+						end
+						default: codeword = "unknown";
+					endcase
+				end else begin
+					// RV64M
+					case (funct3)
+						3'b000: codeword = "MULW";
+						3'b100: codeword = "DIVW";
+						3'b101: codeword = "DIVUW";
+						3'b110: codeword = "REMW";
+						3'b111: codeword = "REMUW";
+						default: codeword = "unknown";
+					endcase
+				end
+			end
+			MISC_MEM: begin
+				has_rd = 1'b0;
+				case (funct3)
+					// RV32I
+					3'b000: codeword = "FENCE";
+					// RV32/64 Zifencei
+					3'b001: codeword = "FENCE.I";
+					default: codeword = "unknown";
+				endcase
+			end
+			SYSTEM: begin
+				// RV32I
+				if (instr == 32'b000000000000_00000_000_00000_1110011) begin
+					codeword = "ECALL";
+					has_rd = 1'b0;
+				end else if (instr == 32'b000000000001_00000_000_00000_1110011) begin
+					codeword = "EBREAK";
+					has_rd = 1'b0;
+				end else begin
+					// RV32/64 Zicsr
+					has_rd = 1'b1;
+					case (funct3)
+						3'b001: codeword = "CSRRW";
+						3'b010: codeword = "CSRRS";
+						3'b011: codeword = "CSRRC";
+						3'b101: codeword = "CSRRWI";
+						3'b110: codeword = "CSRRSI";
+						3'b111: codeword = "CSRRCI";
+						default: codeword = "unknown";
+					endcase
+				end
+			end
+			default: codeword = "unknown";
+		endcase
+	end
+endmodule
+
+
+
+module top
+#(
+  ID_WIDTH = 13,
+  ADDR_WIDTH = 64,
+  DATA_WIDTH = 64,
+  STRB_WIDTH = DATA_WIDTH/8
+)
+(
+  input  clk,
+         reset,
+         hz32768timer,
+
+  // 64-bit addresses of the program entry point and initial stack pointer
+  input  [63:0] entry,
+  input  [63:0] stackptr,
+  input  [63:0] satp,
+
+  // interface to connect to the bus
+  output  wire [ID_WIDTH-1:0]    m_axi_awid,
+  output  wire [ADDR_WIDTH-1:0]  m_axi_awaddr,
+  output  wire [7:0]             m_axi_awlen,
+  output  wire [2:0]             m_axi_awsize,
+  output  wire [1:0]             m_axi_awburst,
+  output  wire                   m_axi_awlock,
+  output  wire [3:0]             m_axi_awcache,
+  output  wire [2:0]             m_axi_awprot,
+  output  wire                   m_axi_awvalid,
+  input   wire                   m_axi_awready,
+  output  wire [DATA_WIDTH-1:0]  m_axi_wdata,
+  output  wire [STRB_WIDTH-1:0]  m_axi_wstrb,
+  output  wire                   m_axi_wlast,
+  output  wire                   m_axi_wvalid,
+  input   wire                   m_axi_wready,
+  input   wire [ID_WIDTH-1:0]    m_axi_bid,
+  input   wire [1:0]             m_axi_bresp,
+  input   wire                   m_axi_bvalid,
+  output  wire                   m_axi_bready,
+  output  wire [ID_WIDTH-1:0]    m_axi_arid,
+  output  wire [ADDR_WIDTH-1:0]  m_axi_araddr,
+  output  wire [7:0]             m_axi_arlen,
+  output  wire [2:0]             m_axi_arsize,
+  output  wire [1:0]             m_axi_arburst,
+  output  wire                   m_axi_arlock,
+  output  wire [3:0]             m_axi_arcache,
+  output  wire [2:0]             m_axi_arprot,
+  output  wire                   m_axi_arvalid,
+  input   wire                   m_axi_arready,
+  input   wire [ID_WIDTH-1:0]    m_axi_rid,
+  input   wire [DATA_WIDTH-1:0]  m_axi_rdata,
+  input   wire [1:0]             m_axi_rresp,
+  input   wire                   m_axi_rlast,
+  input   wire                   m_axi_rvalid,
+  output  wire                   m_axi_rready,
+  input   wire                   m_axi_acvalid,
+  output  wire                   m_axi_acready,
+  input   wire [ADDR_WIDTH-1:0]  m_axi_acaddr,
+  input   wire [3:0]             m_axi_acsnoop
+);
+
+  logic [63:0] pc;
+  logic [63:0] next_pc;
+	logic [511:0] fetched_line;
+	logic [2:0] beat_count;
+  logic [31:0] instr;
+
+  assign m_axi_awid = '0;
+  assign m_axi_awaddr = '0;
+  assign m_axi_awlen = '0;
+  assign m_axi_awsize = '0;
+  assign m_axi_awburst = '0;
+  assign m_axi_awlock = 0;
+  assign m_axi_awcache = '0;
+  assign m_axi_awprot = '0;
+  assign m_axi_wvalid = 0;
+  assign m_axi_wdata = '0;
+  assign m_axi_wstrb = '0;
+  assign m_axi_wlast = 0;
+  assign m_axi_bready = '0;
+  assign m_axi_acready = 0;
+
+  typedef enum logic [1:0] {IDLE, ARADDR, RDATA, DECODE} state_type;
+  state_type state;  
+
+
+	assign m_axi_araddr = pc & ~64'h3f;
+  assign m_axi_arvalid = (state == ARADDR);
+	assign m_axi_arlen = 8'd7;
+  assign m_axi_arsize = 3'b011;
+	assign m_axi_arburst = 2'b10;
+  assign m_axi_arid = '0;
+  assign m_axi_arlock = 1'b0;
+  assign m_axi_arcache = '0;
+  assign m_axi_arprot = '0;
+  assign m_axi_rready = (state == RDATA);
+
+  string codeword;
+  logic [4:0] rd;
+  logic has_rd;
+
+	assign instr = fetched_line[(pc[5:2] * 32) +: 32];
+
+  decoder decode (
+	  .instr (instr),
+	  .codeword (codeword),
+	  .rd (rd),
+	  .has_rd (has_rd)
+  );
+
+  always_comb begin
+    next_pc = pc + 4;
+  end
+
+  always_ff @ (posedge clk) begin
+    if (reset) begin
+      pc <= entry;
+			beat_count <= 3'b000;
+			state <= IDLE;
+    end else begin
+      case (state)
+				IDLE: begin
+					state <= ARADDR;
+				end
+        ARADDR: begin
+		if (m_axi_arvalid && m_axi_arready) begin
+			beat_count <= 3'b000;
+			state <= RDATA;
+		end
+	end
+	RDATA: begin
+		if (m_axi_rvalid) begin
+			if (m_axi_rdata == 64'b0) begin
+				$finish;
+			end else begin
+				fetched_line[beat_count * 64 +: 64] <= m_axi_rdata;
+				if (m_axi_rlast) begin
+					state <= DECODE;
+				end else begin
+					beat_count <= beat_count + 1'b1;
+				end
+			end
+		end
+	end
+	DECODE: begin
+		if (has_rd)
+			$display("%x: %s %0d", pc, codeword, rd);
+		else
+			$display("%x: %s", pc, codeword);
+
+		pc <= next_pc;
+		state <= ARADDR;
+	end
+	default: state<= ARADDR;
+      endcase
+    end
+  end
+
+  initial begin
+    $display("Initializing top, entry point = 0x%x", entry);
+  end
+endmodule

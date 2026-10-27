@@ -1,0 +1,9 @@
+OUTPUT_FORMAT("elf64-littleriscv", "elf64-littleriscv", "elf64-littleriscv")
+OUTPUT_ARCH(riscv)
+SECTIONS
+{
+  . = 0;
+  .text : { *(.text) LONG(0) LONG(0) }
+  .rodata : { *(.rodata*) }
+  /DISCARD/ : { *(.eh_frame*) *(.riscv.attributes) *(.comment) }
+}
