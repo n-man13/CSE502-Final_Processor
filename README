@@ -1,22 +1,18 @@
-CSE 502 -- building a RISC-V core in SystemVerilog
+# CSE 502 -- building a RISC-V 64-bit IM core in SystemVerilog
 
-1. Setup
+## Setup
 
-   git clone /opt/shared/cse502/git wp1
-   cd wp1
    make            # verilate + compile   -> obj_dir/Vtop
    make run        # run PROG (see Makefile) on your core
-
-   Put the course tools on your PATH (add to ~/.bashrc):
 
    source /opt/shared/profile
 
    That gives you riscv64-unknown-linux-gnu-{gcc,ld,objdump,...} and the surfer
    waveform viewer.
 
-2. Running programs
+## Running programs
 
-   make run PROG=/opt/shared/cse502/tests/wp1/prog1
+   make run PROG="/opt/shared/cse502/tests/project/prog1"
    make run PROG="/opt/shared/cse502/tests/project/prog2 100"     # program arguments
 
    Arguments starting with '+' are Verilator plusargs and are not passed on to
@@ -60,7 +56,7 @@ CSE 502 -- building a RISC-V core in SystemVerilog
    the C library asks the (host) operating system for the path of the running
    program during startup.  Compare runs from the same directory.
 
-3. Waveforms
+## Waveforms
 
    TRACE=--trace (the default) writes trace.vcd next to the Makefile.  It is
    slow and large; build with `make TRACE=` when you do not need it.
@@ -68,17 +64,15 @@ CSE 502 -- building a RISC-V core in SystemVerilog
      gtkwave trace.vcd            (ssh -X/-Y)
      /opt/shared/bin/surfer trace.vcd
 
-4. Your own test programs
+## Your own test programs
 
    mktest/ shows how the wp1 tests are built (make in that directory).  For
    Linux programs: riscv64-unknown-linux-gnu-gcc -static -march=rv64im -mabi=lp64
    (the libc is soft-float and has no compressed instructions, so a binary only
    needs RV64IMA).
 
-5. Submitting
+## Submitting
 
-   make submit ASSIGNMENT=wp1
-   make submit ASSIGNMENT=wp2
    make submit ASSIGNMENT=project POINTS=<n> TLB=<y|n> BP=<y|n>
 
    For the project you must say how many points you are claiming, and whether
