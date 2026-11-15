@@ -694,6 +694,98 @@ module l1_d_cache (
 	);
 endmodule
 
+typedef struct packed {
+	logic reg_write;
+	logic mem_read;
+	logic mem_write;
+	logic branch;
+	logic jump;
+	logic alu_src;
+	logic [3:0] alu_op;
+	logic [1:0] mem_to_reg;
+} control_t;
+
+typedef struct packed {
+	logic [31:0] instr;
+	logic [63:0] pc_plus_1;
+} if_id_t;
+
+typedef struct packed {
+	logic [31:0] instr;
+	logic [63:0] pc_plus_1;
+	logic [63:0] regA;
+	logic [63:0] regB;
+	logic [63:0] immediate;
+	control_t control;
+} id_ex_t;
+
+typedef struct packed {
+	logic [31:0] instr;
+	logic [63:0] pc_plus_1;
+	logic [63:0] alu_result;
+	logic [63:0] pc_plus_1_plus_offset;
+	logic [63:0] regB;
+	control_t control;
+} ex_mem_t;
+
+typedef struct packed {
+	logic [31:0] instr;
+	logic [63:0] alu_result;
+	logic [63:0] pc_plus_1_plus_offset;
+	logic [63:0] loaded_data;
+	control_t control;
+} mem_wb_t;
+
+module pipeline_controller (
+	input  logic clk,
+	input  logic reset,
+	input  logic [31:0] fetch_instr,
+	input  logic [63:0] fetch_pc,
+	input  logic [63:0] regA_in,
+	input  logic [63:0] regB_in,
+	input  logic [63:0] immediate_in,
+	input  control_t control_in,
+	input  logic [63:0] alu_result_in,
+	input  logic [63:0] pc_plus_offset_in,
+	input  logic [63:0] loaded_data_in,
+	output if_id_t if_id,
+	output id_ex_t id_ex,
+	output ex_mem_t ex_mem,
+	output mem_wb_t mem_wb
+);
+	always_ff @(posedge clk) begin
+		if (reset) begin
+			if_id <= '0;
+			id_ex <= '0;
+			ex_mem <= '0;
+			mem_wb <= '0;
+		end else begin
+			if_id.instr <= fetch_instr;
+			if_id.pc_plus_1 <= fetch_pc + 64'd4;
+
+			id_ex.instr <= if_id.instr;
+			id_ex.pc_plus_1 <= if_id.pc_plus_1;
+			id_ex.regA <= regA_in;
+			id_ex.regB <= regB_in;
+			id_ex.immediate <= immediate_in;
+			id_ex.control <= control_in;
+
+			ex_mem.instr <= id_ex.instr;
+			ex_mem.pc_plus_1 <= id_ex.pc_plus_1;
+			ex_mem.alu_result <= alu_result_in;
+			ex_mem.pc_plus_1_plus_offset <= pc_plus_offset_in;
+			ex_mem.regB <= id_ex.regB;
+			ex_mem.control <= id_ex.control;
+
+			mem_wb.instr <= ex_mem.instr;
+			mem_wb.alu_result <= ex_mem.alu_result;
+			mem_wb.pc_plus_1_plus_offset <= ex_mem.pc_plus_1_plus_offset;
+			mem_wb.loaded_data <= loaded_data_in;
+			mem_wb.control <= ex_mem.control;
+		end
+	end
+endmodule
+
 module top
 #(
 	ID_WIDTH = 13,
@@ -702,69 +794,81 @@ module top
 	STRB_WIDTH = DATA_WIDTH/8
 )
 (
-	input  clk,
-	input  reset,
-	input  hz32768timer,
+	input  logic clk,
+	input  logic reset,
+	input  logic hz32768timer,
 
 	// 64-bit addresses of the program entry point and initial stack pointer
-	input  [63:0] entry,
-	input  [63:0] stackptr,
-	input  [63:0] satp,
+	input  logic [63:0] entry,
+	input  logic [63:0] stackptr,
+	input  logic [63:0] satp,
 
 	// interface to connect to the bus
-	output wire [ID_WIDTH-1:0]    m_axi_awid,
-	output wire [ADDR_WIDTH-1:0]  m_axi_awaddr,
-	output wire [7:0]             m_axi_awlen,
-	output wire [2:0]             m_axi_awsize,
-	output wire [1:0]             m_axi_awburst,
-	output wire                   m_axi_awlock,
-	output wire [3:0]             m_axi_awcache,
-	output wire [2:0]             m_axi_awprot,
-	output wire                   m_axi_awvalid,
-	input  wire                   m_axi_awready,
-	output wire [DATA_WIDTH-1:0]  m_axi_wdata,
-	output wire [STRB_WIDTH-1:0]  m_axi_wstrb,
-	output wire                   m_axi_wlast,
-	output wire                   m_axi_wvalid,
-	input  wire                   m_axi_wready,
-	input  wire [ID_WIDTH-1:0]    m_axi_bid,
-	input  wire [1:0]             m_axi_bresp,
-	input  wire                   m_axi_bvalid,
-	output wire                   m_axi_bready,
-	output wire [ID_WIDTH-1:0]    m_axi_arid,
-	output wire [ADDR_WIDTH-1:0]  m_axi_araddr,
-	output wire [7:0]             m_axi_arlen,
-	output wire [2:0]             m_axi_arsize,
-	output wire [1:0]             m_axi_arburst,
-	output wire                   m_axi_arlock,
-	output wire [3:0]             m_axi_arcache,
-	output wire [2:0]             m_axi_arprot,
-	output wire                   m_axi_arvalid,
-	input  wire                   m_axi_arready,
-	input  wire [ID_WIDTH-1:0]    m_axi_rid,
-	input  wire [DATA_WIDTH-1:0]  m_axi_rdata,
-	input  wire [1:0]             m_axi_rresp,
-	input  wire                   m_axi_rlast,
-	input  wire                   m_axi_rvalid,
-	output wire                   m_axi_rready,
-	input  wire                   m_axi_acvalid,
-	output wire                   m_axi_acready,
-	input  wire [ADDR_WIDTH-1:0]  m_axi_acaddr,
-	input  wire [3:0]             m_axi_acsnoop
+	output logic [ID_WIDTH-1:0]    m_axi_awid,
+	output logic [ADDR_WIDTH-1:0]  m_axi_awaddr,
+	output logic [7:0]             m_axi_awlen,
+	output logic [2:0]             m_axi_awsize,
+	output logic [1:0]             m_axi_awburst,
+	output logic                   m_axi_awlock,
+	output logic [3:0]             m_axi_awcache,
+	output logic [2:0]             m_axi_awprot,
+	output logic                   m_axi_awvalid,
+	input  logic                   m_axi_awready,
+	output logic [DATA_WIDTH-1:0]  m_axi_wdata,
+	output logic [STRB_WIDTH-1:0]  m_axi_wstrb,
+	output logic                   m_axi_wlast,
+	output logic                   m_axi_wvalid,
+	input  logic                   m_axi_wready,
+	input  logic [ID_WIDTH-1:0]    m_axi_bid,
+	input  logic [1:0]             m_axi_bresp,
+	input  logic                   m_axi_bvalid,
+	output logic                   m_axi_bready,
+	output logic [ID_WIDTH-1:0]    m_axi_arid,
+	output logic [ADDR_WIDTH-1:0]  m_axi_araddr,
+	output logic [7:0]             m_axi_arlen,
+	output logic [2:0]             m_axi_arsize,
+	output logic [1:0]             m_axi_arburst,
+	output logic                   m_axi_arlock,
+	output logic [3:0]             m_axi_arcache,
+	output logic [2:0]             m_axi_arprot,
+	output logic                   m_axi_arvalid,
+	input  logic                   m_axi_arready,
+	input  logic [ID_WIDTH-1:0]    m_axi_rid,
+	input  logic [DATA_WIDTH-1:0]  m_axi_rdata,
+	input  logic [1:0]             m_axi_rresp,
+	input  logic                   m_axi_rlast,
+	input  logic                   m_axi_rvalid,
+	output logic                   m_axi_rready,
+	input  logic                   m_axi_acvalid,
+	output logic                   m_axi_acready,
+	input  logic [ADDR_WIDTH-1:0]  m_axi_acaddr,
+	input  logic [3:0]             m_axi_acsnoop
 );
 
 	logic [63:0] pc;
 	logic [63:0] next_pc;
-	logic [511:0] fetched_line; // 8 * 64 bits = 512 bits
-	logic [2:0] beat_count; // counter up to 8 beats
+	logic [511:0] fetched_line;
+	logic [2:0] beat_count;
 	logic [31:0] instr;
-
-	// Register File connections
-	logic [4:0] rs1, rs2;
-	logic [63:0] rs1_data, rs2_data;
-	// ALU connections
-	logic [63:0] immediate, alu_a, alu_b, alu_result, write_data;
+	logic [31:0] if_instr;
+	logic [63:0] regA_value, regB_value;
+	logic [63:0] immediate;
+	logic [63:0] alu_result;
+	logic [63:0] pc_plus_offset;
+	logic [63:0] mem_data;
+	logic [63:0] write_data;
 	logic write_enable;
+	logic [4:0] rs1, rs2, rd;
+	logic has_rd;
+	codeword_t codeword;
+	control_t decode_control;
+	if_id_t if_id;
+	id_ex_t id_ex;
+	ex_mem_t ex_mem;
+	mem_wb_t mem_wb;
+
+	typedef enum logic [1:0] {IDLE, ARADDR, RDATA, DECODE} state_type;
+	state_type state;
 
 	assign m_axi_awid = '0;
 	assign m_axi_awaddr = '0;
@@ -781,39 +885,32 @@ module top
 	assign m_axi_bready = '0;
 	assign m_axi_acready = 0;
 
-	typedef enum logic [1:0] {IDLE, ARADDR, RDATA, DECODE} state_type;
-	state_type state;
-
-	assign m_axi_araddr = pc & ~64'h3f; // address aligned to 64 bytes (512 bits) to get each line of instruction cache
+	assign m_axi_araddr = pc & ~64'h3f;
 	assign m_axi_arvalid = (state == ARADDR);
-	assign m_axi_arlen = 8'd7; // Ref README
+	assign m_axi_arlen = 8'd7;
 	assign m_axi_arsize = 3'b011;
-	assign m_axi_arburst = 2'b10; // Ref README
+	assign m_axi_arburst = 2'b10;
 	assign m_axi_arid = '0;
 	assign m_axi_arlock = 1'b0;
 	assign m_axi_arcache = '0;
 	assign m_axi_arprot = '0;
 	assign m_axi_rready = (state == RDATA);
 
-	codeword_t codeword;
-	logic [4:0] rd;
-	logic has_rd;
-
-	assign instr = fetched_line[(pc[5:2] * 32) +: 32]; // 32 bits of instruction from the fetched line based on pc[5:2] (which selects 1 of the 16 instructions within the 512-bit line) (pc[1:0] is ignored since instructions are 4-byte aligned pc += 4)
+	assign instr = fetched_line[(pc[5:2] * 32) +: 32];
+	assign if_instr = instr;
+	assign rs1 = instr[19:15];
+	assign rs2 = instr[24:20];
 
 	decoder decode (
-		.instr (instr),
+		.instr (if_instr),
 		.codeword (codeword),
 		.rd (rd),
 		.has_rd (has_rd)
 	);
 
-	assign rs1 = instr[19:15];
-	assign rs2 = instr[24:20];
-
 	regfile registers (
-		.rs1_data (rs1_data),
-		.rs2_data (rs2_data),
+		.rs1_data (regA_value),
+		.rs2_data (regB_value),
 		.clk (clk),
 		.reset (reset),
 		.initial_sp (stackptr),
@@ -826,44 +923,78 @@ module top
 
 	alu execute_alu (
 		.result (alu_result),
-		.a (alu_a),
-		.b (alu_b),
+		.a (id_ex.regA),
+		.b (id_ex.immediate),
 		.codeword (codeword)
 	);
 
 	always_comb begin
-		immediate = {{52{instr[31]}}, instr[31:20]}; // Assuming Standard I-type immediate + sign extension
-		alu_a = rs1_data;
-		alu_b = rs2_data;
-		write_data = alu_result;
+		decode_control = '0;
+		decode_control.reg_write = has_rd && (codeword != UNKNOWN);
+		decode_control.mem_read = 1'b0;
+		decode_control.mem_write = 1'b0;
+		decode_control.branch = 1'b0;
+		decode_control.jump = 1'b0;
+		decode_control.alu_src = 1'b0;
+		decode_control.alu_op = 4'd0;
+		decode_control.mem_to_reg = 2'b00;
+
+		immediate = {{52{if_instr[31]}}, if_instr[31:20]};
+		pc_plus_offset = if_id.pc_plus_1 + immediate;
+		write_data = ex_mem.alu_result;
+		write_enable = mem_wb.control.reg_write && (mem_wb.instr != 32'b0);
+		mem_data = ex_mem.alu_result;
 
 		case (codeword)
 			LUI: begin
-				immediate = {{32{instr[31]}}, instr[31:12], 12'b0}; // U - type immediate + sign extension
-				alu_b = immediate;
+				immediate = {{32{if_instr[31]}}, if_instr[31:12], 12'b0};
+				decode_control.alu_src = 1'b1;
+				decode_control.reg_write = 1'b1;
 			end
 			AUIPC: begin
-				immediate = {{32{instr[31]}}, instr[31:12], 12'b0}; // U - type immediate + sign extension
-				alu_a = pc;
-				alu_b = immediate;
+				immediate = {{32{if_instr[31]}}, if_instr[31:12], 12'b0};
+				decode_control.alu_src = 1'b1;
+				decode_control.reg_write = 1'b1;
 			end
-			ADDI, SLTI, SLTIU, XORI, ORI, ANDI, ADDIW: // I - type immediate + sign extension
-				alu_b = immediate;
-			SLLI, SRLI, SRAI:
-				alu_b = {59'b0, instr[25:20]};
-			SLLIW, SRLIW, SRAIW: // Shift Instructions shamt <- instr[24:20]
-				alu_b = {59'b0, instr[24:20]};
-			default: begin end // Skip other instructions for now
+			ADDI, SLTI, SLTIU, XORI, ORI, ANDI, ADDIW: begin
+				immediate = {{52{if_instr[31]}}, if_instr[31:20]};
+				decode_control.alu_src = 1'b1;
+				decode_control.reg_write = 1'b1;
+			end
+			SLLI, SRLI, SRAI, SLLIW, SRLIW, SRAIW: begin
+				immediate = {{59{1'b0}}, if_instr[25:20]};
+				decode_control.alu_src = 1'b1;
+				decode_control.reg_write = 1'b1;
+			end
+			default: begin end
 		endcase
-
-		write_enable = (state == DECODE) && has_rd && (codeword != UNKNOWN);
 	end
+
+	pipeline_controller pipe (
+		.clk (clk),
+		.reset (reset),
+		.fetch_instr (if_instr),
+		.fetch_pc (pc),
+		.regA_in (regA_value),
+		.regB_in (regB_value),
+		.immediate_in (immediate),
+		.control_in (decode_control),
+		.alu_result_in (alu_result),
+		.pc_plus_offset_in (pc_plus_offset),
+		.loaded_data_in (mem_data),
+		.if_id (if_id),
+		.id_ex (id_ex),
+		.ex_mem (ex_mem),
+		.mem_wb (mem_wb)
+	);
 
 	always_comb begin
-		next_pc = pc + 4;
+		next_pc = pc + 64'd4;
+		write_data = mem_wb.alu_result;
+		if (mem_wb.control.mem_to_reg == 2'b01)
+			write_data = mem_wb.loaded_data;
 	end
 
-	// Format the codeword name for display purposes to keep wp1 working
 	function automatic string codeword_text(input codeword_t value);
 		if (value == FENCE_I)
 			return "FENCE.I";
@@ -875,21 +1006,22 @@ module top
 			pc <= entry;
 			beat_count <= 3'b000;
 			state <= IDLE;
+			fetched_line <= '0;
 		end else begin
 			case (state)
-				IDLE: begin // Init state, start fetching the first instruction line
+				IDLE: begin
 					state <= ARADDR;
 				end
 				ARADDR: begin
 					if (m_axi_arvalid && m_axi_arready) begin
-						beat_count <= 3'b000; // Reset beat_count for the new line fetch
+						beat_count <= 3'b000;
 						state <= RDATA;
 					end
 				end
 				RDATA: begin
 					if (m_axi_rvalid) begin
-						fetched_line[beat_count * 64 +: 64] <= m_axi_rdata; // Set each 64-bit beat of the fetched line based on beat_count
-						if (m_axi_rlast) begin // Input signal for last beat
+						fetched_line[beat_count * 64 +: 64] <= m_axi_rdata;
+						if (m_axi_rlast) begin
 							state <= DECODE;
 						end else begin
 							beat_count <= beat_count + 1'b1;
@@ -897,16 +1029,16 @@ module top
 					end
 				end
 				DECODE: begin
-					if (instr == 32'b0) begin
+					if (if_instr == 32'b0) begin
 						for (int reg_index = 0; reg_index < 32; reg_index = reg_index + 1)
 							$display("Register %0d: %016x", reg_index, registers.read_reg(reg_index));
 						$finish;
 					end else begin
+						pc <= next_pc;
 						if (has_rd)
 							$display("%x: %s %0d", pc, codeword_text(codeword), rd);
 						else
 							$display("%x: %s", pc, codeword_text(codeword));
-						pc <= next_pc;
 					end
 					state <= ARADDR;
 				end
