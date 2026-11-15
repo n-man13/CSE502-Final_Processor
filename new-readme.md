@@ -84,6 +84,11 @@ is stalled.
   valid bits.
 - The next sequential PC (`pc + 4` per instruction).
 
+The `instruction_fetch` module in `top.sv` owns the fetch PC, 64-byte line
+buffer, AXI read state machine, and `fetch_valid`/`fetch_instr` interface.
+The top-level execution path consumes a valid instruction through that
+interface instead of owning the fetch state machine.
+
 The AXI contract in [README.md](C:/Users/nikis/architecture/CSE502-Final_Processor/README.md)
 requires 64-byte reads as eight 64-bit beats, with `arlen = 7`, `arsize = 3`,
 and a WRAP burst. The fetch unit should request a line aligned to 64 bytes,
