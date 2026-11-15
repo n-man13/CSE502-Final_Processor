@@ -634,14 +634,11 @@ module l1_cache #(
 		end
 	end
 
-	initial begin
-		if ((WAYS != 2) || (CACHE_BYTES != 8192) ||
-		    (LINE_BYTES != 32) || (DATA_WIDTH != 64))
-			$error("Unsupported L1 cache geometry");
-	end
 endmodule
 
-module l1_i_cache (
+module l1_i_cache #(
+	parameter int CACHE_BYTES = 16384
+) (
 	input logic clk, reset,
 	input logic cpu_req_valid,
 	output logic cpu_req_ready,
@@ -653,7 +650,10 @@ module l1_i_cache (
 	input logic mem_read_valid,
 	input logic [63:0] mem_read_data
 );
-	l1_cache #(.WRITE_ENABLE(1'b0)) cache (
+	l1_cache #(
+		.WRITE_ENABLE(1'b0),
+		.CACHE_BYTES(CACHE_BYTES)
+	) cache (
 		.clk, .reset, .cpu_req_valid, .cpu_req_ready,
 		.cpu_req_write(1'b0), .cpu_req_addr,
 		.cpu_req_wdata('0), .cpu_req_wstrb('0),
@@ -664,7 +664,9 @@ module l1_i_cache (
 	);
 endmodule
 
-module l1_d_cache (
+module l1_d_cache #(
+	parameter int CACHE_BYTES = 65536
+) (
 	input logic clk, reset,
 	input logic cpu_req_valid,
 	output logic cpu_req_ready,
@@ -684,7 +686,10 @@ module l1_d_cache (
 	output logic [7:0] mem_write_strb,
 	input logic mem_write_ready
 );
-	l1_cache #(.WRITE_ENABLE(1'b1)) cache (
+	l1_cache #(
+		.WRITE_ENABLE(1'b1),
+		.CACHE_BYTES(CACHE_BYTES)
+	) cache (
 		.clk, .reset, .cpu_req_valid, .cpu_req_ready,
 		.cpu_req_write, .cpu_req_addr, .cpu_req_wdata, .cpu_req_wstrb,
 		.cpu_resp_valid, .cpu_resp_rdata,

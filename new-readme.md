@@ -13,7 +13,8 @@ The existing SystemVerilog file already contains useful building blocks:
 - `regfile` provides 32 64-bit integer registers and initializes `x2` (`sp`).
 - `alu` implements most RV64I and RV64M integer operations.
 - `l1_i_cache` and `l1_d_cache` provide separate instruction and data-cache
-  interfaces.
+  interfaces. Their default capacities are 16 KiB and 64 KiB respectively;
+  both retain 32-byte lines and two ways.
 - `top` currently fetches one 64-byte line directly through AXI, decodes one
   instruction, and advances the PC.
 
