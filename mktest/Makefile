@@ -5,11 +5,13 @@ OBJDUMP=$(ARCH)objdump
 CFLAGS=-march=rv64im -mabi=lp64 -O0 -Wno-implicit-int
 STRIP=$(ARCH)strip
 
-OBJECT_FILES=test
+OBJECT_FILES=test test_perf
 
-.PHONY: all clean
+.PHONY: all perf clean
 
 all: $(OBJECT_FILES)
+
+perf: test_perf
 
 clean:
 	rm -f $(OBJECT_FILES) $(patsubst %,%.o,$(OBJECT_FILES)) $(patsubst %,%.s,$(OBJECT_FILES))
