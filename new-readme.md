@@ -310,32 +310,123 @@ pipeline until the non-TLB core is stable.
 
 ## 6. Implementation methodology
 
-Work in milestones, keeping the design runnable after each milestone:
+Implement the processor in incremental milestones. Each milestone should
+compile, run the smallest available test, and leave the architectural state
+well-defined before the next feature is added. Develop the **superscalar
+frontend** and **in-order backend** as separate responsibilities with explicit
+pipeline-record interfaces between them.
 
-1. **Define pipeline records and timing.** Create typed IF/ID, ID/EX, EX/MEM,
-   and MEM/WB structures with valid, stall, flush, and control fields.
-2. **Separate fetch from execution.** Replace the current `top` state machine
-   with an instruction-cache request/response path and a fetch buffer.
-3. **Make one instruction fully functional.** Implement immediate generation,
-   ALU execution, register writeback, and sequential PC updates.
-4. **Add loads and stores.** Integrate `l1_d_cache`, byte enables, extension,
-   writeback, and store commit notifications.
-5. **Add control flow.** Implement B-type and J-type immediates, target
-   calculation, redirect, and flushing.
-6. **Add hazards and forwarding.** First make a single-issue pipeline correct,
-   then add conservative two-wide checks.
-7. **Add RV64M multi-cycle behavior.** Verify divide-by-zero and signed
-   overflow behavior against the ISA.
-8. **Enable two-wide dispatch.** Allow slot 2 only when hazard, resource,
-   control, and memory-order checks pass.
-9. **Add fences, CSR/system instructions, and `ECALL`** required by the
-   supplied programs.
-10. **Add optional TLB and branch prediction** only after baseline tests pass.
+### Phase A: Establish the pipeline contract
 
-Keep the architectural state separate from pipeline state. A flush clears
-pipeline valid bits; it must not clear the register file or cache contents.
-Prefer explicit state machines for cache misses, division, and page walks over
-implicit timing assumptions.
+1. **Define architectural and timing state.** Specify the PC, register-file
+   writeback, memory side effects, instruction ordering, and commit point.
+2. **Define pipeline records.** Create typed IF/ID, ID/EX, EX/MEM, and MEM/WB
+   records. Every record should include `valid`, instruction identity, PC,
+   source/destination register metadata, operand or result values, and control
+   fields.
+3. **Define timing rules.** Specify how reset, flush, stall, bubble insertion,
+   and normal advance affect each record. Use a single priority order so that
+   a flush cannot be overwritten by a stall.
+4. **Add observability.** Carry an instruction sequence number or equivalent
+   debug identity through the pipeline. Display or trace it at commit.
+
+### Phase B: Build and verify the superscalar frontend
+
+The frontend is responsible for producing an ordered stream of up to two
+instructions. It must not perform architectural register writes or memory
+stores.
+
+1. **Separate instruction fetch.** Keep the fetch PC, line buffer, instruction
+   cache request/response state, and AXI read protocol in the fetch unit.
+2. **Implement instruction alignment and buffering.** Select up to two
+   32-bit instructions from a returned line, handle 64-byte line boundaries,
+   and hold instructions until the backend can accept them.
+3. **Add frontend valid/ready flow control.** The frontend must stop issuing
+   new instructions when the decode queue or backend is full, and must retain
+   stable instruction and PC values while stalled.
+4. **Add decode and immediate generation.** Decode both slots independently,
+   generate the correct I, S, B, U, and J immediates, and attach all control
+   metadata to each frontend record.
+5. **Add frontend control-flow recovery.** Accept redirect messages from the
+   backend, invalidate younger fetched instructions, and restart fetch at the
+   redirect PC.
+6. **Add optional branch prediction last.** Begin with predict-not-taken.
+   Introduce prediction only after redirects and flushes are correct, and
+   measure misprediction cost separately from fetch bandwidth.
+
+Frontend exit criteria:
+
+- It can supply zero, one, or two valid instructions without losing order.
+- It holds instructions correctly during backend stalls.
+- It discards all younger work after a redirect.
+- Fetch and decode can be tested independently from the execute units.
+
+### Phase C: Build a correct in-order backend
+
+The backend consumes decoded instructions in program order. It may execute
+independent instructions in parallel, but it must preserve precise retirement.
+
+1. **Implement single-issue execute first.** Connect the ALU, register operands,
+   immediate selects, and result metadata through ID/EX and EX/MEM.
+2. **Implement register writeback and commit.** Carry `rd` and `reg_write`
+   through the pipeline, write only valid MEM/WB entries, suppress writes to
+   `x0`, and retire in program order.
+3. **Add forwarding.** Forward ALU results from EX/MEM and MEM/WB to execute
+   and branch operands. Add same-cycle writeback-to-decode bypassing.
+4. **Add load-use interlocks.** Stall the dependent instruction until a load
+   response is available, while allowing older instructions to complete.
+5. **Add branches and jumps.** Calculate conditions and targets in the backend,
+   emit redirects, and flush younger frontend and pipeline records.
+6. **Add memory operations.** Connect the data cache, generate byte strobes,
+   extend load values correctly, and delay stores until their commit point.
+7. **Add RV64M execution.** Keep multiply behavior correct, then add a
+   multi-cycle divide/remainder unit with explicit busy and done state.
+8. **Add fences, CSRs, and `ECALL`.** Treat these as ordered backend operations
+   that cannot execute speculatively or retire around younger side effects.
+
+Backend exit criteria:
+
+- A single instruction stream produces correct committed registers and memory.
+- Stalls and cache misses preserve instruction order.
+- Branches, jumps, exceptions, and system calls are precise.
+- Every side effect occurs once, at commit, and never for a flushed instruction.
+
+### Phase D: Add superscalar issue and retire
+
+Once the frontend and single-issue backend pass the functional tests, widen the
+interfaces deliberately:
+
+1. **Add two frontend slots.** Fetch and decode two instructions with separate
+   valid bits, PCs, register metadata, immediates, and controls.
+2. **Add pair dependency checks.** Prevent slot 2 from issuing when it reads a
+   register written by slot 1, consumes a load result, or depends on a control
+   instruction.
+3. **Add resource checks.** Track ALU, multiplier/divider, cache request, and
+   register-file write-port availability. Issue only combinations the hardware
+   can accept.
+4. **Add backend issue selection.** Allow independent ALU operations to execute
+   together first. Keep memory, divide, fence, and system operations
+   conservative until their ordering is verified.
+5. **Retire in order.** Commit slot 1 before slot 2. If slot 1 stalls, traps,
+   redirects, or is invalid, slot 2 must not commit ahead of it.
+6. **Measure performance.** Compare instructions per cycle, frontend stalls,
+   backend stalls, cache-miss cycles, branch penalties, and utilization of
+   the second slot against the single-issue baseline.
+
+### Phase E: Add optional memory translation and optimization
+
+1. Add bare physical addressing as the stable baseline.
+2. Add the Sv48 TLB and page-walk state machine as a separate backend/memory
+   subsystem, with explicit miss stalls and permission checks.
+3. Add cache snoop invalidation and verify instruction/data coherence after
+   system calls.
+4. Add branch prediction, cache optimizations, and additional issue
+   concurrency only after correctness and precise commit are stable.
+
+At every phase, keep architectural state separate from pipeline state. A flush
+clears valid bits for younger work; it must not clear the register file or
+cache contents. Prefer explicit state machines for cache misses, division,
+page walks, and system calls over implicit timing assumptions.
 
 ## 7. Verification strategy
 
