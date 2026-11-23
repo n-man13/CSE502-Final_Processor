@@ -706,20 +706,25 @@ typedef struct packed {
 } control_t;
 
 typedef struct packed {
+	logic valid;
 	logic [31:0] instr;
+	logic [63:0] pc;
 	logic [63:0] pc_plus_1;
 } if_id_t;
 
 typedef struct packed {
+	logic valid;
 	logic [31:0] instr;
 	logic [63:0] pc_plus_1;
 	logic [63:0] regA;
 	logic [63:0] regB;
 	logic [63:0] immediate;
+	codeword_t codeword;
 	control_t control;
 } id_ex_t;
 
 typedef struct packed {
+	logic valid;
 	logic [31:0] instr;
 	logic [63:0] pc_plus_1;
 	logic [63:0] alu_result;
@@ -729,6 +734,7 @@ typedef struct packed {
 } ex_mem_t;
 
 typedef struct packed {
+	logic valid;
 	logic [31:0] instr;
 	logic [63:0] alu_result;
 	logic [63:0] pc_plus_1_plus_offset;
@@ -739,12 +745,14 @@ typedef struct packed {
 module pipeline_controller (
 	input  logic clk,
 	input  logic reset,
+	input  logic fetch_valid,
 	input  logic [31:0] fetch_instr,
 	input  logic [63:0] fetch_pc,
 	input  logic [63:0] regA_in,
 	input  logic [63:0] regB_in,
 	input  logic [63:0] immediate_in,
 	input  control_t control_in,
+	input  codeword_t codeword_in,
 	input  logic [63:0] alu_result_in,
 	input  logic [63:0] pc_plus_offset_in,
 	input  logic [63:0] loaded_data_in,
@@ -760,16 +768,21 @@ module pipeline_controller (
 			ex_mem <= '0;
 			mem_wb <= '0;
 		end else begin
-			if_id.instr <= fetch_instr;
+			if_id.valid <= fetch_valid;
+			if_id.instr <= fetch_valid ? fetch_instr : 32'b0;
+			if_id.pc <= fetch_pc;
 			if_id.pc_plus_1 <= fetch_pc + 64'd4;
 
+			id_ex.valid <= if_id.valid;
 			id_ex.instr <= if_id.instr;
 			id_ex.pc_plus_1 <= if_id.pc_plus_1;
 			id_ex.regA <= regA_in;
 			id_ex.regB <= regB_in;
 			id_ex.immediate <= immediate_in;
+			id_ex.codeword <= codeword_in;
 			id_ex.control <= control_in;
 
+			ex_mem.valid <= id_ex.valid;
 			ex_mem.instr <= id_ex.instr;
 			ex_mem.pc_plus_1 <= id_ex.pc_plus_1;
 			ex_mem.alu_result <= alu_result_in;
@@ -777,6 +790,7 @@ module pipeline_controller (
 			ex_mem.regB <= id_ex.regB;
 			ex_mem.control <= id_ex.control;
 
+			mem_wb.valid <= ex_mem.valid;
 			mem_wb.instr <= ex_mem.instr;
 			mem_wb.alu_result <= ex_mem.alu_result;
 			mem_wb.pc_plus_1_plus_offset <= ex_mem.pc_plus_1_plus_offset;
@@ -847,19 +861,27 @@ module top
 
 	logic [63:0] pc;
 	logic [63:0] next_pc;
-	logic [511:0] fetched_line;
-	logic [2:0] beat_count;
+	logic [511:0] fetched_line; // 8 * 64 bits = 512 bits
+	logic [2:0] beat_count; // counter up to 8 beats
 	logic [31:0] instr;
 	logic [31:0] if_instr;
+
+	// Register File connections
 	logic [63:0] regA_value, regB_value;
+	logic [4:0] rs1, rs2, rd;
+	logic has_rd;
+
+	// ALU connections
 	logic [63:0] immediate;
 	logic [63:0] alu_result;
 	logic [63:0] pc_plus_offset;
 	logic [63:0] mem_data;
 	logic [63:0] write_data;
 	logic write_enable;
-	logic [4:0] rs1, rs2, rd;
-	logic has_rd;
+	logic [4:0] wb_rd;
+	logic id_has_rd;
+	codeword_t id_codeword;
+	logic fetch_valid;
 	codeword_t codeword;
 	control_t decode_control;
 	if_id_t if_id;
@@ -867,7 +889,7 @@ module top
 	ex_mem_t ex_mem;
 	mem_wb_t mem_wb;
 
-	typedef enum logic [1:0] {IDLE, ARADDR, RDATA, DECODE} state_type;
+	typedef enum logic [2:0] {IDLE, ARADDR, RDATA, DECODE, DRAIN} state_type;
 	state_type state;
 
 	assign m_axi_awid = '0;
@@ -885,27 +907,36 @@ module top
 	assign m_axi_bready = '0;
 	assign m_axi_acready = 0;
 
-	assign m_axi_araddr = pc & ~64'h3f;
+	assign m_axi_araddr = pc & ~64'h3f; // address aligned to 64 bytes (512 bits) to get each line of instruction cache
 	assign m_axi_arvalid = (state == ARADDR);
-	assign m_axi_arlen = 8'd7;
+	assign m_axi_arlen = 8'd7; // Ref README
 	assign m_axi_arsize = 3'b011;
-	assign m_axi_arburst = 2'b10;
+	assign m_axi_arburst = 2'b10; // Ref README
 	assign m_axi_arid = '0;
 	assign m_axi_arlock = 1'b0;
 	assign m_axi_arcache = '0;
 	assign m_axi_arprot = '0;
 	assign m_axi_rready = (state == RDATA);
 
-	assign instr = fetched_line[(pc[5:2] * 32) +: 32];
+	assign instr = fetched_line[(pc[5:2] * 32) +: 32]; // 32 bits of instruction from the fetched line based on pc[5:2] (which selects 1 of the 16 instructions within the 512-bit line) (pc[1:0] is ignored since instructions are 4-byte aligned pc += 4)
 	assign if_instr = instr;
-	assign rs1 = instr[19:15];
-	assign rs2 = instr[24:20];
+	assign rs1 = if_id.instr[19:15];
+	assign rs2 = if_id.instr[24:20];
+	assign wb_rd = mem_wb.instr[11:7];
+	assign fetch_valid = (state == DECODE) && (instr != 32'b0);
 
 	decoder decode (
 		.instr (if_instr),
 		.codeword (codeword),
 		.rd (rd),
 		.has_rd (has_rd)
+	);
+
+	decoder decode_pipeline_instruction (
+		.instr (if_id.instr),
+		.codeword (id_codeword),
+		.rd (),
+		.has_rd (id_has_rd)
 	);
 
 	regfile registers (
@@ -916,7 +947,7 @@ module top
 		.initial_sp (stackptr),
 		.rs1 (rs1),
 		.rs2 (rs2),
-		.rd (rd),
+		.rd (wb_rd),
 		.wdata (write_data),
 		.write_enable (write_enable)
 	);
@@ -924,47 +955,47 @@ module top
 	alu execute_alu (
 		.result (alu_result),
 		.a (id_ex.regA),
-		.b (id_ex.immediate),
-		.codeword (codeword)
+		.b (id_ex.control.alu_src ? id_ex.immediate : id_ex.regB),
+		.codeword (id_ex.codeword)
 	);
 
 	always_comb begin
 		decode_control = '0;
-		decode_control.reg_write = has_rd && (codeword != UNKNOWN);
-		decode_control.mem_read = 1'b0;
-		decode_control.mem_write = 1'b0;
-		decode_control.branch = 1'b0;
-		decode_control.jump = 1'b0;
-		decode_control.alu_src = 1'b0;
-		decode_control.alu_op = 4'd0;
-		decode_control.mem_to_reg = 2'b00;
-
-		immediate = {{52{if_instr[31]}}, if_instr[31:20]};
+		immediate = {{52{if_id.instr[31]}}, if_id.instr[31:20]}; // Assuming Standard I-type immediate + sign extension
 		pc_plus_offset = if_id.pc_plus_1 + immediate;
-		write_data = ex_mem.alu_result;
-		write_enable = mem_wb.control.reg_write && (mem_wb.instr != 32'b0);
+		write_enable = mem_wb.valid && mem_wb.control.reg_write;
 		mem_data = ex_mem.alu_result;
 
-		case (codeword)
+		case (id_codeword)
 			LUI: begin
-				immediate = {{32{if_instr[31]}}, if_instr[31:12], 12'b0};
+				immediate = {{32{if_id.instr[31]}}, if_id.instr[31:12], 12'b0}; // U - type immediate + sign extension
 				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = 1'b1;
+				decode_control.reg_write = id_has_rd;
 			end
 			AUIPC: begin
-				immediate = {{32{if_instr[31]}}, if_instr[31:12], 12'b0};
+				immediate = {{32{if_id.instr[31]}}, if_id.instr[31:12], 12'b0}; // U - type immediate + sign extension
 				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = 1'b1;
+				decode_control.reg_write = id_has_rd;
 			end
-			ADDI, SLTI, SLTIU, XORI, ORI, ANDI, ADDIW: begin
-				immediate = {{52{if_instr[31]}}, if_instr[31:20]};
+			ADDI, SLTI, SLTIU, XORI, ORI, ANDI, ADDIW: begin // I - type immediate + sign extension
+				immediate = {{52{if_id.instr[31]}}, if_id.instr[31:20]};
 				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = 1'b1;
+				decode_control.reg_write = id_has_rd;
 			end
-			SLLI, SRLI, SRAI, SLLIW, SRLIW, SRAIW: begin
-				immediate = {{59{1'b0}}, if_instr[25:20]};
+			SLLI, SRLI, SRAI: begin
+				immediate = {{58{1'b0}}, if_id.instr[25:20]};
 				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = 1'b1;
+				decode_control.reg_write = id_has_rd;
+			end
+			SLLIW, SRLIW, SRAIW: begin // Shift amount uses instr[24:20] for word variants
+				immediate = {{59{1'b0}}, if_id.instr[24:20]};
+				decode_control.alu_src = 1'b1;
+				decode_control.reg_write = id_has_rd;
+			end
+			ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND,
+			MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU,
+			ADDW, SUBW, SLLW, SRLW, SRAW, MULW, DIVW, DIVUW, REMW, REMUW: begin
+				decode_control.reg_write = id_has_rd;
 			end
 			default: begin end
 		endcase
@@ -973,12 +1004,14 @@ module top
 	pipeline_controller pipe (
 		.clk (clk),
 		.reset (reset),
+		.fetch_valid (fetch_valid),
 		.fetch_instr (if_instr),
 		.fetch_pc (pc),
-		.regA_in (regA_value),
+		.regA_in ((id_codeword == AUIPC) ? if_id.pc : regA_value),
 		.regB_in (regB_value),
 		.immediate_in (immediate),
 		.control_in (decode_control),
+		.codeword_in (id_codeword),
 		.alu_result_in (alu_result),
 		.pc_plus_offset_in (pc_plus_offset),
 		.loaded_data_in (mem_data),
@@ -995,6 +1028,7 @@ module top
 			write_data = mem_wb.loaded_data;
 	end
 
+	// Format the codeword name for display purposes to keep wp1 working
 	function automatic string codeword_text(input codeword_t value);
 		if (value == FENCE_I)
 			return "FENCE.I";
@@ -1009,19 +1043,19 @@ module top
 			fetched_line <= '0;
 		end else begin
 			case (state)
-				IDLE: begin
+				IDLE: begin // Init state, start fetching the first instruction line
 					state <= ARADDR;
 				end
 				ARADDR: begin
 					if (m_axi_arvalid && m_axi_arready) begin
-						beat_count <= 3'b000;
+						beat_count <= 3'b000; // Reset beat_count for the new line fetch
 						state <= RDATA;
 					end
 				end
 				RDATA: begin
 					if (m_axi_rvalid) begin
-						fetched_line[beat_count * 64 +: 64] <= m_axi_rdata;
-						if (m_axi_rlast) begin
+						fetched_line[beat_count * 64 +: 64] <= m_axi_rdata; // Set each 64-bit beat of the fetched line based on beat_count
+						if (m_axi_rlast) begin // Input signal for last beat
 							state <= DECODE;
 						end else begin
 							beat_count <= beat_count + 1'b1;
@@ -1030,9 +1064,7 @@ module top
 				end
 				DECODE: begin
 					if (if_instr == 32'b0) begin
-						for (int reg_index = 0; reg_index < 32; reg_index = reg_index + 1)
-							$display("Register %0d: %016x", reg_index, registers.read_reg(reg_index));
-						$finish;
+						state <= DRAIN;
 					end else begin
 						pc <= next_pc;
 						if (has_rd)
@@ -1040,7 +1072,15 @@ module top
 						else
 							$display("%x: %s", pc, codeword_text(codeword));
 					end
-					state <= ARADDR;
+					if (if_instr != 32'b0)
+						state <= ARADDR;
+				end
+				DRAIN: begin
+					if (!if_id.valid && !id_ex.valid && !ex_mem.valid && !mem_wb.valid) begin
+						for (int reg_index = 0; reg_index < 32; reg_index = reg_index + 1)
+							$display("Register %0d: %016x", reg_index, registers.read_reg(reg_index));
+						$finish;
+					end
 				end
 				default: state <= ARADDR;
 			endcase
@@ -1051,4 +1091,3 @@ module top
 		$display("Initializing top, entry point = 0x%x", entry);
 	end
 endmodule
-
