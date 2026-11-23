@@ -65,6 +65,7 @@ Build and test with the professor environment:
 
 ```bash
 make
+make run 'PROG=$(CSE502)/tests/project/prog1'
 make run PROG="/opt/shared/cse502/tests/wp1/prog1"
 cd mktest && make perf
 make run PROG="mktest/test_perf"

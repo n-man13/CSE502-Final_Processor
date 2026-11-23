@@ -64,11 +64,15 @@ module decoder (
 
 		has_rd = 1'b0;
 		codeword = UNKNOWN;
-		if (instr[1:0] != 2'b11) begin
+		// All-zero word: treat as NOP (same effect as addi x0, x0, 0).
+		// Without this, opcode bits decode as LB from address 0.
+		if (instr == 32'b0) begin
+			codeword = ADDI;
+			has_rd = 1'b0;
+		end else if (instr[1:0] != 2'b11) begin
 			codeword = UNKNOWN;
 			has_rd = 1'b0;
-		end
-		case (opcode[6:2])
+		end else case (opcode[6:2])
 			// add all the cases for each opcode filling in what
 			// codeword, and whether it has rd
 			// RV32I
@@ -452,13 +456,13 @@ module alu (
 endmodule
 
 // Common blocking cache used by the instruction and data-cache wrappers.
-// Geometry is fixed to 8 KiB, two ways, and 32-byte lines by default.
+// Default geometry matches the course memory model: 64-byte lines (8x8B beats).
 module l1_cache #(
 	parameter bit WRITE_ENABLE = 1'b0,
 	parameter int ADDR_WIDTH = 64,
 	parameter int DATA_WIDTH = 64,
 	parameter int CACHE_BYTES = 8192,
-	parameter int LINE_BYTES = 32,
+	parameter int LINE_BYTES = 64,
 	parameter int WAYS = 2
 ) (
 	input  logic clk,
@@ -509,7 +513,6 @@ module l1_cache #(
 	logic [TAG_BITS-1:0] req_tag;
 	logic victim_way;
 	logic [BEAT_BITS-1:0] transfer_beat;
-	logic transfer_pending;
 	logic [DATA_WIDTH-1:0] response_data;
 
 	wire hit0 = valid[req_set][0] && (tag[req_set][0] == req_tag);
@@ -525,12 +528,12 @@ module l1_cache #(
 	assign cpu_resp_rdata = response_data;
 
 	always_comb begin
-		mem_read_req = (state == S_REFILL) && !transfer_pending;
-		mem_read_addr = {req_addr[ADDR_WIDTH-1:OFFSET_BITS],
-				 transfer_beat, {BYTE_BITS{1'b0}}};
-		mem_write_req = (state == S_WRITEBACK) && !transfer_pending;
-		mem_write_addr = {tag[req_set][victim_way], req_set,
-				  transfer_beat, {BYTE_BITS{1'b0}}};
+		// Hold request high for the whole line transfer so the AXI arbiter
+		// can stream an 8-beat burst without missing single-cycle pulses.
+		mem_read_req = (state == S_REFILL);
+		mem_read_addr = {req_addr[ADDR_WIDTH-1:OFFSET_BITS], {OFFSET_BITS{1'b0}}};
+		mem_write_req = (state == S_WRITEBACK);
+		mem_write_addr = {tag[req_set][victim_way], req_set, {OFFSET_BITS{1'b0}}};
 		mem_write_data = line_data[req_set][victim_way][transfer_beat];
 		mem_write_strb = {DATA_WIDTH/8{1'b1}};
 	end
@@ -552,7 +555,6 @@ module l1_cache #(
 			req_tag <= '0;
 			victim_way <= 1'b0;
 			transfer_beat <= '0;
-			transfer_pending <= 1'b0;
 			for (set_i = 0; set_i < SETS; set_i = set_i + 1) begin
 				lru[set_i] = 1'b0;
 				for (way_i = 0; way_i < WAYS; way_i = way_i + 1) begin
@@ -596,7 +598,6 @@ module l1_cache #(
 					end else begin
 						victim_way <= selected_victim_way;
 						transfer_beat <= '0;
-						transfer_pending <= 1'b0;
 						if (WRITE_ENABLE &&
 						    valid[req_set][selected_victim_way] &&
 						    dirty[req_set][selected_victim_way])
@@ -607,11 +608,7 @@ module l1_cache #(
 				end
 
 				S_WRITEBACK: begin
-					if (!transfer_pending) begin
-						if (mem_write_ready)
-							transfer_pending <= 1'b1;
-					end else begin
-						transfer_pending <= 1'b0;
+					if (mem_write_ready) begin
 						if (transfer_beat == BEAT_BITS'(BEATS_PER_LINE-1)) begin
 							transfer_beat <= '0;
 							state <= S_REFILL;
@@ -621,18 +618,16 @@ module l1_cache #(
 				end
 
 				S_REFILL: begin
-					if (!transfer_pending) begin
-						transfer_pending <= 1'b1;
-					end else if (mem_read_valid) begin
+					if (mem_read_valid) begin
 						line_data[req_set][victim_way][transfer_beat] <= mem_read_data;
 						if (transfer_beat == req_beat)
 							response_data <= mem_read_data;
-						transfer_pending <= 1'b0;
 						if (transfer_beat == BEAT_BITS'(BEATS_PER_LINE-1)) begin
 							valid[req_set][victim_way] <= 1'b1;
 							dirty[req_set][victim_way] <= 1'b0;
 							tag[req_set][victim_way] <= req_tag;
 							lru[req_set] <= !victim_way;
+							transfer_beat <= '0;
 							state <= req_write ? S_LOOKUP : S_RESP;
 						end else
 							transfer_beat <= transfer_beat + 1'b1;
@@ -833,6 +828,8 @@ module top
 	logic [63:0] fetch_pc;
 	logic [31:0] fetch_instr;
 	logic fetch_valid;
+	logic [2:0] zero_instr_count;
+	logic pipeline_all_zero;
 	logic i_pending;
 	logic [63:0] i_pending_pc;
 	logic i_cancel_resp;
@@ -1178,15 +1175,16 @@ module top
 	aw_state_t aw_state;
 
 	always_comb begin
-		m_axi_arid='0; m_axi_araddr='0; m_axi_arlen=8'd3;
-		m_axi_arsize=3'b011; m_axi_arburst=2'b01; m_axi_arlock=1'b0;
+		// Course memory model: 8-beat WRAP reads of 64-byte lines.
+		m_axi_arid='0; m_axi_araddr='0; m_axi_arlen=8'd7;
+		m_axi_arsize=3'b011; m_axi_arburst=2'b10; m_axi_arlock=1'b0;
 		m_axi_arcache='0; m_axi_arprot='0; m_axi_arvalid=1'b0;
 		m_axi_rready=1'b0;
 		i_mem_read_valid=1'b0; i_mem_read_data='0;
 		d_mem_read_valid=1'b0; d_mem_read_data='0;
 		case (ar_state)
-			AR_D: begin m_axi_arvalid=1'b1; m_axi_araddr=d_mem_read_addr & ~64'h1f; end
-			AR_I: begin m_axi_arvalid=1'b1; m_axi_araddr=i_mem_read_addr & ~64'h1f; end
+			AR_D: begin m_axi_arvalid=1'b1; m_axi_araddr=ar_addr; end
+			AR_I: begin m_axi_arvalid=1'b1; m_axi_araddr=ar_addr; end
 			AR_DATA: begin
 				m_axi_rready=1'b1;
 				if (m_axi_rvalid) begin
@@ -1203,28 +1201,31 @@ module top
 		end else begin
 			case (ar_state)
 				AR_IDLE: begin
-					if (d_mem_read_req) begin ar_is_d<=1'b1; ar_addr<=d_mem_read_addr & ~64'h1f; ar_state<=AR_D; end
-					else if (i_mem_read_req) begin ar_is_d<=1'b0; ar_addr<=i_mem_read_addr & ~64'h1f; ar_state<=AR_I; end
+					if (d_mem_read_req) begin ar_is_d<=1'b1; ar_addr<=d_mem_read_addr & ~64'h3f; ar_state<=AR_D; end
+					else if (i_mem_read_req) begin ar_is_d<=1'b0; ar_addr<=i_mem_read_addr & ~64'h3f; ar_state<=AR_I; end
 				end
 				AR_D: if (m_axi_arvalid && m_axi_arready) ar_state<=AR_DATA;
 				AR_I: if (m_axi_arvalid && m_axi_arready) ar_state<=AR_DATA;
-				AR_DATA: if (m_axi_rvalid && m_axi_rlast) ar_state<=AR_IDLE;
+				AR_DATA: if (m_axi_rvalid && m_axi_rready && m_axi_rlast) ar_state<=AR_IDLE;
 				default: ar_state<=AR_IDLE;
 			endcase
 		end
 	end
 
 	always_comb begin
-		m_axi_awid='0; m_axi_awaddr='0; m_axi_awlen=8'd3; m_axi_awsize=3'b011;
+		// Course memory model: 8-beat INCR writes of 64-byte lines.
+		m_axi_awid='0; m_axi_awaddr='0; m_axi_awlen=8'd7; m_axi_awsize=3'b011;
 		m_axi_awburst=2'b01; m_axi_awlock=1'b0; m_axi_awcache='0; m_axi_awprot='0;
 		m_axi_awvalid=1'b0; m_axi_wdata='0; m_axi_wstrb='0; m_axi_wlast=1'b0; m_axi_wvalid=1'b0;
 		m_axi_bready=1'b0; d_mem_write_ready=1'b0;
 		case (aw_state)
-			AW_ADDR: begin m_axi_awvalid=1'b1; m_axi_awaddr=d_mem_write_addr & ~64'h1f; end
+			AW_ADDR: begin m_axi_awvalid=1'b1; m_axi_awaddr=aw_addr; end
 			AW_DATA: begin
-				m_axi_wvalid=1'b1; m_axi_wdata=d_mem_write_data; m_axi_wstrb=d_mem_write_strb;
-				m_axi_wlast=(aw_wbeat==3'd3);
-				if (m_axi_wready) d_mem_write_ready=1'b1;
+				m_axi_wvalid=d_mem_write_req;
+				m_axi_wdata=d_mem_write_data;
+				m_axi_wstrb=d_mem_write_strb;
+				m_axi_wlast=(aw_wbeat==3'd7);
+				if (m_axi_wvalid && m_axi_wready) d_mem_write_ready=1'b1;
 			end
 			AW_RESP: m_axi_bready=1'b1;
 			default: begin end
@@ -1235,10 +1236,10 @@ module top
 		if (reset) begin aw_state<=AW_IDLE; aw_wbeat<=0; aw_addr<=0;
 		end else begin
 			case (aw_state)
-				AW_IDLE: if (d_mem_write_req) begin aw_addr<=d_mem_write_addr & ~64'h1f; aw_state<=AW_ADDR; end
+				AW_IDLE: if (d_mem_write_req) begin aw_addr<=d_mem_write_addr & ~64'h3f; aw_state<=AW_ADDR; end
 				AW_ADDR: if (m_axi_awvalid && m_axi_awready) begin aw_wbeat<=0; aw_state<=AW_DATA; end
 				AW_DATA: if (m_axi_wvalid && m_axi_wready) begin
-					if (aw_wbeat==3'd3) aw_state<=AW_RESP; else aw_wbeat<=aw_wbeat+1'b1;
+					if (aw_wbeat==3'd7) aw_state<=AW_RESP; else aw_wbeat<=aw_wbeat+1'b1;
 				end
 				AW_RESP: if (m_axi_bvalid) aw_state<=AW_IDLE;
 				default: aw_state<=AW_IDLE;
@@ -1276,11 +1277,31 @@ module top
 			do_finish_write(ex_mem.alu_result, (ex_mem.codeword==SB)?1:(ex_mem.codeword==SH)?2:(ex_mem.codeword==SW)?4:(ex_mem.codeword==SD)?8:0);
 	end
 
+	// End simulation after falling into a run of all-zero words (treated as NOPs),
+	// or once every in-flight pipeline stage is a zero instruction.
+	assign pipeline_all_zero =
+		fetch_valid && (fetch_instr == 32'b0) &&
+		if_id.valid && (if_id.instr == 32'b0) &&
+		id_ex.valid && (id_ex.instr == 32'b0) &&
+		ex_mem.valid && (ex_mem.instr == 32'b0) &&
+		mem_wb.valid && (mem_wb.instr == 32'b0);
+
 	always_ff @(posedge clk) begin
-		if (!reset && fetch_valid) begin
-			if (fetch_instr == 32'b0) begin
-				for (int reg_index=0; reg_index<32; reg_index=reg_index+1)
-					$display("Register %0d: %016x",reg_index,registers.read_reg(5'(reg_index)));
+		if (reset || redirect) begin
+			zero_instr_count <= '0;
+		end else begin
+			if (!pipeline_stall && fetch_valid) begin
+				if (fetch_instr == 32'b0)
+					zero_instr_count <= zero_instr_count + 3'd1;
+				else
+					zero_instr_count <= '0;
+			end
+
+			// Finish on the 5th consecutive accepted zero, or when every stage is zero.
+			if (pipeline_all_zero ||
+			    (zero_instr_count >= 3'd4 && !pipeline_stall && fetch_valid && fetch_instr == 32'b0)) begin
+				for (int reg_index = 0; reg_index < 32; reg_index = reg_index + 1)
+					$display("Register %0d: %016x", reg_index, registers.read_reg(5'(reg_index)));
 				$finish;
 			end
 		end

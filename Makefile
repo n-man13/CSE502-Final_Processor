@@ -1,7 +1,12 @@
 .PHONY: all run clean submit
 
 # Course tree: DRAMSim2, RISC-V toolchain, test programs.
+# Prefer the lab path; fall back to a local checkout when /opt/shared is absent.
+ifeq ($(wildcard /opt/shared/cse502/DRAMSim2/DRAMSim.h),)
+CSE502?=/mnt/c/Users/nikis/architecture/cse502-shared/cse502
+else
 CSE502?=/opt/shared/cse502
+endif
 
 # Program to run.  Anything on the command line starting with '+' goes to
 # Verilator (plusargs); everything else is passed to the program as argv.
@@ -22,7 +27,7 @@ CFILES=$(wildcard *.cpp)
 all: obj_dir/Vtop
 
 obj_dir/Vtop: obj_dir/Vtop.mk
-	$(MAKE) -j$(shell nproc) -C obj_dir/ -f Vtop.mk CXX="ccache g++"
+	$(MAKE) -j$(shell nproc) -C obj_dir/ -f Vtop.mk CXX="g++"
 
 obj_dir/Vtop.mk: $(VFILES) $(CFILES)
 	verilator -Wall -Wno-lint -O3 $(TRACE) --no-skip-identical --cc $(VFILES) --top-module top \
