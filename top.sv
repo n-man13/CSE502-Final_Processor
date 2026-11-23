@@ -713,6 +713,7 @@ typedef struct packed {
 typedef struct packed {
 	logic valid;
 	logic [31:0] instr;
+	logic [63:0] pc;
 	logic [63:0] pc_plus_1;
 } if_id_t;
 
@@ -1026,15 +1027,23 @@ module top
 	logic fetch_valid;
 	logic fetch_consume;
 	logic [31:0] if_instr;
+
+	// Register File connections
 	logic [63:0] regA_value, regB_value;
+	logic [4:0] rs1, rs2, rd;
+	logic has_rd;
+
+	// ALU connections
 	logic [63:0] immediate;
 	logic [63:0] alu_result;
 	logic [63:0] pc_plus_offset;
 	logic [63:0] mem_data;
 	logic [63:0] write_data;
 	logic write_enable;
-	logic [4:0] rs1, rs2, rd;
-	logic has_rd;
+	logic [4:0] wb_rd;
+	logic id_has_rd;
+	codeword_t id_codeword;
+	logic fetch_valid;
 	codeword_t codeword;
 	control_t decode_control;
 	if_id_t if_id;
@@ -1106,6 +1115,13 @@ module top
 		.has_rd (has_rd)
 	);
 
+	decoder decode_pipeline_instruction (
+		.instr (if_id.instr),
+		.codeword (id_codeword),
+		.rd (),
+		.has_rd (id_has_rd)
+	);
+
 	regfile registers (
 		.rs1_data (regA_value),
 		.rs2_data (regB_value),
@@ -1122,46 +1138,47 @@ module top
 	alu execute_alu (
 		.result (alu_result),
 		.a (id_ex.regA),
-		.b (id_ex.immediate),
+		.b (id_ex.control.alu_src ? id_ex.immediate : id_ex.regB),
 		.codeword (id_ex.codeword)
 	);
 
 	always_comb begin
 		decode_control = '0;
-		decode_control.reg_write = has_rd && (codeword != UNKNOWN);
-		decode_control.mem_read = 1'b0;
-		decode_control.mem_write = 1'b0;
-		decode_control.branch = 1'b0;
-		decode_control.jump = 1'b0;
-		decode_control.alu_src = 1'b0;
-		decode_control.alu_op = 4'd0;
-		decode_control.mem_to_reg = 2'b00;
-
-		immediate = {{52{if_instr[31]}}, if_instr[31:20]};
+		immediate = {{52{if_id.instr[31]}}, if_id.instr[31:20]}; // Assuming Standard I-type immediate + sign extension
 		pc_plus_offset = if_id.pc_plus_1 + immediate;
 		write_enable = mem_wb.valid && mem_wb.control.reg_write;
 		mem_data = ex_mem.alu_result;
 
-		case (codeword)
+		case (id_codeword)
 			LUI: begin
-				immediate = {{32{if_instr[31]}}, if_instr[31:12], 12'b0};
+				immediate = {{32{if_id.instr[31]}}, if_id.instr[31:12], 12'b0}; // U - type immediate + sign extension
 				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = 1'b1;
+				decode_control.reg_write = id_has_rd;
 			end
 			AUIPC: begin
-				immediate = {{32{if_instr[31]}}, if_instr[31:12], 12'b0};
+				immediate = {{32{if_id.instr[31]}}, if_id.instr[31:12], 12'b0}; // U - type immediate + sign extension
 				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = 1'b1;
+				decode_control.reg_write = id_has_rd;
 			end
-			ADDI, SLTI, SLTIU, XORI, ORI, ANDI, ADDIW: begin
-				immediate = {{52{if_instr[31]}}, if_instr[31:20]};
+			ADDI, SLTI, SLTIU, XORI, ORI, ANDI, ADDIW: begin // I - type immediate + sign extension
+				immediate = {{52{if_id.instr[31]}}, if_id.instr[31:20]};
 				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = 1'b1;
+				decode_control.reg_write = id_has_rd;
 			end
-			SLLI, SRLI, SRAI, SLLIW, SRLIW, SRAIW: begin
-				immediate = {{59{1'b0}}, if_instr[25:20]};
+			SLLI, SRLI, SRAI: begin
+				immediate = {{58{1'b0}}, if_id.instr[25:20]};
 				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = 1'b1;
+				decode_control.reg_write = id_has_rd;
+			end
+			SLLIW, SRLIW, SRAIW: begin // Shift amount uses instr[24:20] for word variants
+				immediate = {{59{1'b0}}, if_id.instr[24:20]};
+				decode_control.alu_src = 1'b1;
+				decode_control.reg_write = id_has_rd;
+			end
+			ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND,
+			MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU,
+			ADDW, SUBW, SLLW, SRLW, SRAW, MULW, DIVW, DIVUW, REMW, REMUW: begin
+				decode_control.reg_write = id_has_rd;
 			end
 			default: begin end
 		endcase
@@ -1174,13 +1191,13 @@ module top
 		.flush (pipeline_flush),
 		.fetch_instr (if_instr),
 		.fetch_pc (fetch_pc),
-		.regA_in (regA_value),
+		.regA_in ((id_codeword == AUIPC) ? if_id.pc : regA_value),
 		.regB_in (regB_value),
 		.immediate_in (immediate),
 		.rd_in (rd),
 		.rs1_in (rs1),
 		.rs2_in (rs2),
-		.codeword_in (codeword),
+		.codeword_in (id_codeword),
 		.control_in (decode_control),
 		.alu_result_in (alu_result),
 		.pc_plus_offset_in (pc_plus_offset),
@@ -1197,6 +1214,7 @@ module top
 			write_data = mem_wb.loaded_data;
 	end
 
+	// Format the codeword name for display purposes to keep wp1 working
 	function automatic string codeword_text(input codeword_t value);
 		if (value == FENCE_I)
 			return "FENCE.I";
@@ -1221,4 +1239,3 @@ module top
 		$display("Initializing top, entry point = 0x%x", entry);
 	end
 endmodule
-
