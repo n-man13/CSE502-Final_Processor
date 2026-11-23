@@ -1,0 +1,132 @@
+Tracked signals: ['clk', 'd_pending', 'fetch_instr', 'fetch_pc', 'fetch_valid', 'i_pending', 'load_use_stall', 'm_axi_araddr', 'm_axi_arburst', 'm_axi_arlen', 'm_axi_arvalid', 'm_axi_awaddr', 'm_axi_awburst', 'm_axi_awlen', 'm_axi_awvalid', 'm_axi_rlast', 'm_axi_rready', 'm_axi_rvalid', 'm_axi_wlast', 'm_axi_wvalid', 'pc', 'pipeline_all_zero', 'pipeline_stall', 'redirect', 'reset', 'zero_instr_count']
+
+=== TRACE SUMMARY (prog1) ===
+timescale: 1ps
+end_time: 13535000 (13.535 us if ps)
+clock_posedges: 27069
+clock_period: 500 1ps (2000000000.0 Hz nominal)
+post-reset valid fetches: 7681
+zero instruction fetches: 0
+pipeline_stall cycles: 19481
+load_use_stall cycles: 0
+i_pending cycles: 16854
+d_pending cycles: 5158
+redirect events: 1255
+AXI AR handshakes sampled: 6
+AXI AW handshakes sampled: 0
+
+--- Opcode mix (fetched, valid) ---
+  OP-IMM: 2627
+  LOAD: 2508
+  BRANCH: 2504
+  STORE: 26
+  AUIPC: 8
+  JAL: 4
+  JALR: 2
+  OP: 2
+
+--- Top fetch PCs ---
+  pc=0x10894: 2506
+  pc=0x10898: 2504
+  pc=0x1089c: 2504
+  pc=0x105d4: 90
+  pc=0x105d0: 4
+  pc=0x105d8: 3
+  pc=0x105bc: 2
+  pc=0x105f0: 2
+  pc=0x105f4: 2
+  pc=0x105f8: 2
+  pc=0x105c0: 2
+  pc=0x105c4: 2
+  pc=0x105c8: 2
+  pc=0x105cc: 2
+  pc=0x105dc: 2
+
+--- First 25 valid fetches ---
+  [00] t=54000 pc=0x105bc instr=034000ef
+  [01] t=55500 pc=0x105bc instr=034000ef
+  [02] t=100500 pc=0x105f0 instr=00089197
+  [03] t=102000 pc=0x105f0 instr=00089197
+  [04] t=103500 pc=0x105f4 instr=a7818193
+  [05] t=105000 pc=0x105f4 instr=a7818193
+  [06] t=106500 pc=0x105f8 instr=00008067
+  [07] t=108000 pc=0x105f8 instr=00008067
+  [08] t=111000 pc=0x105c0 instr=00050793
+  [09] t=112500 pc=0x105c0 instr=00050793
+  [10] t=114000 pc=0x105c4 instr=00000517
+  [11] t=115500 pc=0x105c4 instr=00000517
+  [12] t=117000 pc=0x105c8 instr=02850513
+  [13] t=118500 pc=0x105c8 instr=02850513
+  [14] t=120000 pc=0x105cc instr=00013583
+  [15] t=121500 pc=0x105cc instr=00013583
+  [16] t=123000 pc=0x105d0 instr=00810613
+  [17] t=124500 pc=0x105d0 instr=00810613
+  [18] t=125000 pc=0x105d0 instr=00810613
+  [19] t=125500 pc=0x105d0 instr=00810613
+  [20] t=126000 pc=0x105d4 instr=ff017113
+  [21] t=126500 pc=0x105d4 instr=ff017113
+  [22] t=127000 pc=0x105d4 instr=ff017113
+  [23] t=127500 pc=0x105d4 instr=ff017113
+  [24] t=128000 pc=0x105d4 instr=ff017113
+
+--- Last 15 valid fetches ---
+  [7666] t=13509000 pc=0x1089c instr=fe079ce3
+  [7667] t=13512000 pc=0x10894 instr=00073783
+  [7668] t=13513500 pc=0x10894 instr=00073783
+  [7669] t=13515000 pc=0x10898 instr=00870713
+  [7670] t=13516500 pc=0x10898 instr=00870713
+  [7671] t=13518000 pc=0x1089c instr=fe079ce3
+  [7672] t=13519500 pc=0x1089c instr=fe079ce3
+  [7673] t=13522500 pc=0x10894 instr=00073783
+  [7674] t=13524000 pc=0x10894 instr=00073783
+  [7675] t=13525500 pc=0x10898 instr=00870713
+  [7676] t=13527000 pc=0x10898 instr=00870713
+  [7677] t=13528500 pc=0x1089c instr=fe079ce3
+  [7678] t=13530000 pc=0x1089c instr=fe079ce3
+  [7679] t=13533000 pc=0x10894 instr=00073783
+  [7680] t=13534500 pc=0x10894 instr=00073783
+
+--- AXI read requests (first 20) ---
+  t=3000 araddr=0x10580 burst=WRAP len=7 (beats=8)
+  t=57500 araddr=0x105c0 burst=WRAP len=7 (beats=8)
+  t=125500 araddr=0x0 burst=WRAP len=7 (beats=8)
+  t=186500 araddr=0x10800 burst=WRAP len=7 (beats=8)
+  t=237500 araddr=0x10840 burst=WRAP len=7 (beats=8)
+  t=327500 araddr=0x10880 burst=WRAP len=7 (beats=8)
+
+--- AXI write requests (first 10) ---
+
+Unique PCs in last 50 fetches: 3
+Max consecutive same-PC streak in last 50: 2
+
+--- Early/sparse cycle samples ---
+  t=      1500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      2000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      2500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      3000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=1 ara=0x10580 zc=0
+  t=      3500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      4000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      4500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      5000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      5500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      6000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      6500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      7000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      7500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      8000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      8500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      9000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=      9500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     10000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     10500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     11000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     11500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     12000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     12500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     13000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     13500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     14000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     14500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     15000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     15500 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
+  t=     16000 pc=           0x105bc fpc=           0x105bc finstr=00000000 fv=0 st=1 ip=1 ar=0 ara=0x0 zc=0
