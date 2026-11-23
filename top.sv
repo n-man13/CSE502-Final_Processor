@@ -875,6 +875,8 @@ module top
 	logic fetch_valid;
 	logic [2:0] zero_instr_count;
 	logic pipeline_all_zero;
+	logic halting;            // main returned to address 0: drain, then finish
+	logic [2:0] halt_drain;
 	logic i_pending;
 	logic [63:0] i_pending_pc;
 	logic i_cancel_resp;
@@ -1345,7 +1347,7 @@ module top
 	// Issue at most one I-fetch at a time, and never while a fetched insn is
 	// waiting to enter IF/ID or a redirect cancel is in progress. This keeps
 	// if_req_pc (starting at entry) aligned with the instruction stream.
-	assign i_cpu_req_valid = !reset && !i_pending && !fetch_valid && !i_cancel_resp;
+	assign i_cpu_req_valid = !reset && !i_pending && !fetch_valid && !i_cancel_resp && !halting;
 
 	// Shared AXI read/write arbiter
 	typedef enum logic [2:0] {AR_IDLE, AR_D, AR_I, AR_DATA} ar_state_t;
@@ -1460,6 +1462,28 @@ module top
 		// do_finish_write itself when the line reaches DRAM.
 		if (!reset && d_cpu_req_valid && d_cpu_req_ready && d_cpu_req_write && !split_phase)
 			do_pending_write(ex_mem.alu_result, st_value, st_size);
+	end
+
+	// A bare main (no _start / exit syscall) returns through ra, which is 0 at
+	// reset. Stop fetching, let the older instructions write back, then finish.
+	always_ff @(posedge clk) begin
+		if (reset) begin
+			halting <= 1'b0;
+			halt_drain <= '0;
+		end else if (!halting) begin
+			if (take_redirect && id_ex.codeword == JALR && redirect_pc == 64'b0) begin
+				halting <= 1'b1;
+				halt_drain <= '0;
+			end
+		end else begin
+			halt_drain <= halt_drain + 3'd1;
+			if (halt_drain == 3'd3) begin
+				$display("main returned to address 0; ending simulation");
+				for (int reg_index = 0; reg_index < 32; reg_index = reg_index + 1)
+					$display("Register %0d: %016x", reg_index, registers.read_reg(5'(reg_index)));
+				$finish;
+			end
+		end
 	end
 
 	// End simulation after falling into a run of all-zero words (treated as NOPs),

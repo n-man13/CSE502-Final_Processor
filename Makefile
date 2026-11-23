@@ -10,7 +10,7 @@ endif
 
 # Program to run.  Anything on the command line starting with '+' goes to
 # Verilator (plusargs); everything else is passed to the program as argv.
-PROG=$(CSE502)/tests/wp1/prog1
+PROG=$(CSE502)/tests/project/prog1
 #PROG=$(CSE502)/tests/bbl.bin
 
 TRACE?=--trace
