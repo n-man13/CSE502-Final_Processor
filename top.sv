@@ -1082,7 +1082,9 @@ module top
 				if (i_cpu_resp_valid && i_pending && !i_cancel_resp) begin
 					i_pending <= 1'b0;
 					fetch_pc <= i_pending_pc;
-					fetch_instr <= i_pending_pc[2] ? i_cpu_resp_rdata[63:32] : i_cpu_resp_rdata[31:0];
+					fetch_instr <= i_pending_pc[2] ?
+						i_cpu_resp_rdata[63:32] :
+						i_cpu_resp_rdata[31:0];
 					fetch_valid <= 1'b1;
 				end else if (i_cancel_resp && i_cpu_resp_valid) begin
 					i_pending <= 1'b0;
@@ -1176,15 +1178,15 @@ module top
 	aw_state_t aw_state;
 
 	always_comb begin
-		m_axi_arid='0; m_axi_araddr='0; m_axi_arlen=8'd7;
+		m_axi_arid='0; m_axi_araddr='0; m_axi_arlen=8'd3;
 		m_axi_arsize=3'b011; m_axi_arburst=2'b01; m_axi_arlock=1'b0;
 		m_axi_arcache='0; m_axi_arprot='0; m_axi_arvalid=1'b0;
 		m_axi_rready=1'b0;
 		i_mem_read_valid=1'b0; i_mem_read_data='0;
 		d_mem_read_valid=1'b0; d_mem_read_data='0;
 		case (ar_state)
-			AR_D: begin m_axi_arvalid=1'b1; m_axi_araddr=d_mem_read_addr & ~64'h3f; end
-			AR_I: begin m_axi_arvalid=1'b1; m_axi_araddr=i_mem_read_addr & ~64'h3f; end
+			AR_D: begin m_axi_arvalid=1'b1; m_axi_araddr=d_mem_read_addr & ~64'h1f; end
+			AR_I: begin m_axi_arvalid=1'b1; m_axi_araddr=i_mem_read_addr & ~64'h1f; end
 			AR_DATA: begin
 				m_axi_rready=1'b1;
 				if (m_axi_rvalid) begin
@@ -1201,8 +1203,8 @@ module top
 		end else begin
 			case (ar_state)
 				AR_IDLE: begin
-					if (d_mem_read_req) begin ar_is_d<=1'b1; ar_addr<=d_mem_read_addr & ~64'h3f; ar_state<=AR_D; end
-					else if (i_mem_read_req) begin ar_is_d<=1'b0; ar_addr<=i_mem_read_addr & ~64'h3f; ar_state<=AR_I; end
+					if (d_mem_read_req) begin ar_is_d<=1'b1; ar_addr<=d_mem_read_addr & ~64'h1f; ar_state<=AR_D; end
+					else if (i_mem_read_req) begin ar_is_d<=1'b0; ar_addr<=i_mem_read_addr & ~64'h1f; ar_state<=AR_I; end
 				end
 				AR_D: if (m_axi_arvalid && m_axi_arready) ar_state<=AR_DATA;
 				AR_I: if (m_axi_arvalid && m_axi_arready) ar_state<=AR_DATA;
@@ -1213,7 +1215,7 @@ module top
 	end
 
 	always_comb begin
-		m_axi_awid='0; m_axi_awaddr='0; m_axi_awlen=8'd7; m_axi_awsize=3'b011;
+		m_axi_awid='0; m_axi_awaddr='0; m_axi_awlen=8'd3; m_axi_awsize=3'b011;
 		m_axi_awburst=2'b01; m_axi_awlock=1'b0; m_axi_awcache='0; m_axi_awprot='0;
 		m_axi_awvalid=1'b0; m_axi_wdata='0; m_axi_wstrb='0; m_axi_wlast=1'b0; m_axi_wvalid=1'b0;
 		m_axi_bready=1'b0; d_mem_write_ready=1'b0;
