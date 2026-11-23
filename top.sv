@@ -290,6 +290,9 @@ endmodule
 
 module regfile (
 	output logic [63:0] rs1_data, rs2_data,
+	output logic [63:0] syscall_a0, syscall_a1, syscall_a2,
+	output logic [63:0] syscall_a3, syscall_a4, syscall_a5,
+	output logic [63:0] syscall_a6, syscall_a7,
 	input logic clk,
 	input logic reset,
 	input logic [63:0] initial_sp,
@@ -301,6 +304,14 @@ module regfile (
 
 	assign rs1_data = (rs1 == 5'd0) ? 64'd0 : regs[rs1];
 	assign rs2_data = (rs2 == 5'd0) ? 64'd0 : regs[rs2];
+	assign syscall_a0 = (10 < 32) ? regs[10] : 64'd0;
+	assign syscall_a1 = (11 < 32) ? regs[11] : 64'd0;
+	assign syscall_a2 = (12 < 32) ? regs[12] : 64'd0;
+	assign syscall_a3 = (13 < 32) ? regs[13] : 64'd0;
+	assign syscall_a4 = (14 < 32) ? regs[14] : 64'd0;
+	assign syscall_a5 = (15 < 32) ? regs[15] : 64'd0;
+	assign syscall_a6 = (16 < 32) ? regs[16] : 64'd0;
+	assign syscall_a7 = (17 < 32) ? regs[17] : 64'd0;
 
 	always_ff @(posedge clk) begin
 		if (reset) begin // On Reset: Sets all registers to 0, except for x2 (sp) which is set to initial_sp
@@ -543,13 +554,13 @@ module l1_cache #(
 			transfer_beat <= '0;
 			transfer_pending <= 1'b0;
 			for (set_i = 0; set_i < SETS; set_i = set_i + 1) begin
-				lru[set_i] <= 1'b0;
+				lru[set_i] = 1'b0;
 				for (way_i = 0; way_i < WAYS; way_i = way_i + 1) begin
-					valid[set_i][way_i] <= 1'b0;
-					dirty[set_i][way_i] <= 1'b0;
-					tag[set_i][way_i] <= '0;
+					valid[set_i][way_i] = 1'b0;
+					dirty[set_i][way_i] = 1'b0;
+					tag[set_i][way_i] = '0;
 					for (beat_i = 0; beat_i < BEATS_PER_LINE; beat_i = beat_i + 1)
-						line_data[set_i][way_i][beat_i] <= '0;
+						line_data[set_i][way_i][beat_i] = '0;
 				end
 			end
 		end else begin
@@ -601,7 +612,7 @@ module l1_cache #(
 							transfer_pending <= 1'b1;
 					end else begin
 						transfer_pending <= 1'b0;
-						if (transfer_beat == BEATS_PER_LINE-1) begin
+						if (transfer_beat == BEAT_BITS'(BEATS_PER_LINE-1)) begin
 							transfer_beat <= '0;
 							state <= S_REFILL;
 						end else
@@ -617,7 +628,7 @@ module l1_cache #(
 						if (transfer_beat == req_beat)
 							response_data <= mem_read_data;
 						transfer_pending <= 1'b0;
-						if (transfer_beat == BEATS_PER_LINE-1) begin
+						if (transfer_beat == BEAT_BITS'(BEATS_PER_LINE-1)) begin
 							valid[req_set][victim_way] <= 1'b1;
 							dirty[req_set][victim_way] <= 1'b0;
 							tag[req_set][victim_way] <= req_tag;
@@ -706,7 +717,6 @@ typedef struct packed {
 	logic branch;
 	logic jump;
 	logic alu_src;
-	logic [3:0] alu_op;
 	logic [1:0] mem_to_reg;
 } control_t;
 
@@ -720,6 +730,7 @@ typedef struct packed {
 typedef struct packed {
 	logic valid;
 	logic [31:0] instr;
+	logic [63:0] pc;
 	logic [63:0] pc_plus_1;
 	logic [63:0] regA;
 	logic [63:0] regB;
@@ -734,6 +745,7 @@ typedef struct packed {
 typedef struct packed {
 	logic valid;
 	logic [31:0] instr;
+	logic [63:0] pc;
 	logic [63:0] pc_plus_1;
 	logic [63:0] alu_result;
 	logic [63:0] pc_plus_1_plus_offset;
@@ -746,6 +758,8 @@ typedef struct packed {
 typedef struct packed {
 	logic valid;
 	logic [31:0] instr;
+	logic [63:0] pc;
+	logic [63:0] pc_plus_1;
 	logic [63:0] alu_result;
 	logic [63:0] pc_plus_1_plus_offset;
 	logic [63:0] loaded_data;
@@ -753,215 +767,6 @@ typedef struct packed {
 	codeword_t codeword;
 	control_t control;
 } mem_wb_t;
-
-module pipeline_controller (
-	input  logic clk,
-	input  logic reset,
-	input  logic stall,
-	input  logic flush,
-	input  logic [31:0] fetch_instr,
-	input  logic [63:0] fetch_pc,
-	input  logic [63:0] regA_in,
-	input  logic [63:0] regB_in,
-	input  logic [63:0] immediate_in,
-	input logic [4:0] rd_in,
-	input logic [4:0] rs1_in,
-	input logic [4:0] rs2_in,
-	input codeword_t codeword_in,
-	input  control_t control_in,
-	input  logic [63:0] alu_result_in,
-	input  logic [63:0] pc_plus_offset_in,
-	input  logic [63:0] loaded_data_in,
-	output if_id_t if_id,
-	output id_ex_t id_ex,
-	output ex_mem_t ex_mem,
-	output mem_wb_t mem_wb
-);
-	always_ff @(posedge clk) begin
-		if (reset) begin
-			if_id <= '0;
-			id_ex <= '0;
-			ex_mem <= '0;
-			mem_wb <= '0;
-		end else if (flush) begin
-			// A redirect resolved in EX invalidates younger IF and ID work.
-			// The resolving instruction remains in EX/MEM.
-			if_id <= '0;
-			id_ex <= '0;
-			mem_wb <= ex_mem;
-		end else if (stall) begin
-			// Hold all in-flight state while the front end or a downstream
-			// resource is unavailable.
-			if_id <= if_id;
-			id_ex <= id_ex;
-			ex_mem <= ex_mem;
-			mem_wb <= mem_wb;
-		end else begin
-			if_id.valid <= 1'b1;
-			if_id.instr <= fetch_instr;
-			if_id.pc_plus_1 <= fetch_pc + 64'd4;
-
-			id_ex.valid <= if_id.valid;
-			id_ex.instr <= if_id.instr;
-			id_ex.pc_plus_1 <= if_id.pc_plus_1;
-			id_ex.regA <= regA_in;
-			id_ex.regB <= regB_in;
-			id_ex.immediate <= immediate_in;
-			id_ex.rd <= rd_in;
-			id_ex.rs1 <= rs1_in;
-			id_ex.rs2 <= rs2_in;
-			id_ex.codeword <= codeword_in;
-			id_ex.control <= control_in;
-
-			ex_mem.valid <= id_ex.valid;
-			ex_mem.instr <= id_ex.instr;
-			ex_mem.pc_plus_1 <= id_ex.pc_plus_1;
-			ex_mem.alu_result <= alu_result_in;
-			ex_mem.pc_plus_1_plus_offset <= pc_plus_offset_in;
-			ex_mem.regB <= id_ex.regB;
-			ex_mem.rd <= id_ex.rd;
-			ex_mem.codeword <= id_ex.codeword;
-			ex_mem.control <= id_ex.control;
-
-			mem_wb.valid <= ex_mem.valid;
-			mem_wb.instr <= ex_mem.instr;
-			mem_wb.alu_result <= ex_mem.alu_result;
-			mem_wb.pc_plus_1_plus_offset <= ex_mem.pc_plus_1_plus_offset;
-			mem_wb.loaded_data <= loaded_data_in;
-			mem_wb.rd <= ex_mem.rd;
-			mem_wb.codeword <= ex_mem.codeword;
-			mem_wb.control <= ex_mem.control;
-		end
-	end
-endmodule
-
-module instruction_fetch #(
-	ID_WIDTH = 13,
-	ADDR_WIDTH = 64,
-	DATA_WIDTH = 64,
-	STRB_WIDTH = DATA_WIDTH/8
-) (
-	input logic clk,
-	input logic reset,
-	input logic [63:0] entry,
-	input logic consume,
-	output logic [63:0] fetch_pc,
-	output logic [31:0] fetch_instr,
-	output logic fetch_valid,
-
-	output logic [ID_WIDTH-1:0]    m_axi_awid,
-	output logic [ADDR_WIDTH-1:0]  m_axi_awaddr,
-	output logic [7:0]             m_axi_awlen,
-	output logic [2:0]             m_axi_awsize,
-	output logic [1:0]             m_axi_awburst,
-	output logic                   m_axi_awlock,
-	output logic [3:0]             m_axi_awcache,
-	output logic [2:0]             m_axi_awprot,
-	output logic                   m_axi_awvalid,
-	input logic                    m_axi_awready,
-	output logic [DATA_WIDTH-1:0]  m_axi_wdata,
-	output logic [STRB_WIDTH-1:0]  m_axi_wstrb,
-	output logic                   m_axi_wlast,
-	output logic                   m_axi_wvalid,
-	input logic                    m_axi_wready,
-	input logic [ID_WIDTH-1:0]     m_axi_bid,
-	input logic [1:0]              m_axi_bresp,
-	input logic                    m_axi_bvalid,
-	output logic                   m_axi_bready,
-	output logic [ID_WIDTH-1:0]    m_axi_arid,
-	output logic [ADDR_WIDTH-1:0]  m_axi_araddr,
-	output logic [7:0]             m_axi_arlen,
-	output logic [2:0]             m_axi_arsize,
-	output logic [1:0]              m_axi_arburst,
-	output logic                   m_axi_arlock,
-	output logic [3:0]             m_axi_arcache,
-	output logic [2:0]             m_axi_arprot,
-	output logic                   m_axi_arvalid,
-	input logic                    m_axi_arready,
-	input logic [ID_WIDTH-1:0]     m_axi_rid,
-	input logic [DATA_WIDTH-1:0]  m_axi_rdata,
-	input logic [1:0]              m_axi_rresp,
-	input logic                    m_axi_rlast,
-	input logic                    m_axi_rvalid,
-	output logic                   m_axi_rready,
-	input logic                    m_axi_acvalid,
-	output logic                   m_axi_acready,
-	input logic [ADDR_WIDTH-1:0]  m_axi_acaddr,
-	input logic [3:0]              m_axi_acsnoop
-);
-	logic [63:0] pc;
-	logic [511:0] fetched_line;
-	logic [2:0] beat_count;
-
-	typedef enum logic [1:0] {F_IDLE, F_ARADDR, F_RDATA, F_DECODE} fetch_state_t;
-	fetch_state_t state;
-
-	assign fetch_pc = pc;
-	assign fetch_instr = fetched_line[(pc[5:2] * 32) +: 32];
-	assign fetch_valid = (state == F_DECODE);
-
-	assign m_axi_awid = '0;
-	assign m_axi_awaddr = '0;
-	assign m_axi_awlen = '0;
-	assign m_axi_awsize = '0;
-	assign m_axi_awburst = '0;
-	assign m_axi_awlock = 1'b0;
-	assign m_axi_awcache = '0;
-	assign m_axi_awprot = '0;
-	assign m_axi_awvalid = 1'b0;
-	assign m_axi_wdata = '0;
-	assign m_axi_wstrb = '0;
-	assign m_axi_wlast = 1'b0;
-	assign m_axi_wvalid = 1'b0;
-	assign m_axi_bready = 1'b0;
-	assign m_axi_acready = 1'b0;
-
-	assign m_axi_araddr = pc & ~64'h3f;
-	assign m_axi_arvalid = (state == F_ARADDR);
-	assign m_axi_arlen = 8'd7;
-	assign m_axi_arsize = 3'b011;
-	assign m_axi_arburst = 2'b10;
-	assign m_axi_arid = '0;
-	assign m_axi_arlock = 1'b0;
-	assign m_axi_arcache = '0;
-	assign m_axi_arprot = '0;
-	assign m_axi_rready = (state == F_RDATA);
-
-	always_ff @(posedge clk) begin
-		if (reset) begin
-			pc <= entry;
-			beat_count <= 3'b000;
-			state <= F_IDLE;
-			fetched_line <= '0;
-		end else begin
-			case (state)
-				F_IDLE: state <= F_ARADDR;
-				F_ARADDR: begin
-					if (m_axi_arvalid && m_axi_arready) begin
-						beat_count <= 3'b000;
-						state <= F_RDATA;
-					end
-				end
-				F_RDATA: begin
-					if (m_axi_rvalid) begin
-						fetched_line[beat_count * 64 +: 64] <= m_axi_rdata;
-						if (m_axi_rlast)
-							state <= F_DECODE;
-						else
-							beat_count <= beat_count + 1'b1;
-					end
-				end
-				F_DECODE: begin
-					if (consume) begin
-						pc <= pc + 64'd4;
-						state <= F_ARADDR;
-					end
-				end
-				default: state <= F_IDLE;
-			endcase
-		end
-	end
-endmodule
 
 module top
 #(
@@ -974,13 +779,10 @@ module top
 	input  logic clk,
 	input  logic reset,
 	input  logic hz32768timer,
-
-	// 64-bit addresses of the program entry point and initial stack pointer
 	input  logic [63:0] entry,
 	input  logic [63:0] stackptr,
 	input  logic [63:0] satp,
 
-	// interface to connect to the bus
 	output logic [ID_WIDTH-1:0]    m_axi_awid,
 	output logic [ADDR_WIDTH-1:0]  m_axi_awaddr,
 	output logic [7:0]             m_axi_awlen,
@@ -1022,220 +824,467 @@ module top
 	input  logic [3:0]             m_axi_acsnoop
 );
 
-	logic [63:0] fetch_pc;
-	logic [31:0] fetch_instr;
-	logic fetch_valid;
-	logic fetch_consume;
-	logic [31:0] if_instr;
-
-	// Register File connections
-	logic [63:0] regA_value, regB_value;
-	logic [4:0] rs1, rs2, rd;
-	logic has_rd;
-
-	// ALU connections
-	logic [63:0] immediate;
-	logic [63:0] alu_result;
-	logic [63:0] pc_plus_offset;
-	logic [63:0] mem_data;
-	logic [63:0] write_data;
-	logic write_enable;
-	logic [4:0] wb_rd;
-	logic id_has_rd;
-	codeword_t id_codeword;
-	logic fetch_valid;
-	codeword_t codeword;
-	control_t decode_control;
 	if_id_t if_id;
 	id_ex_t id_ex;
 	ex_mem_t ex_mem;
 	mem_wb_t mem_wb;
+
+	logic [63:0] pc;
+	logic [63:0] fetch_pc;
+	logic [31:0] fetch_instr;
+	logic fetch_valid;
+	logic i_pending;
+	logic [63:0] i_pending_pc;
+	logic i_cancel_resp;
+
+	logic [63:0] regA_value, regB_value;
+	logic [63:0] id_regA, id_regB;
+	logic [63:0] immediate;
+	logic [4:0] rs1, rs2, rd;
+	logic has_rd;
+	codeword_t id_codeword;
+	control_t decode_control;
+	logic [63:0] execute_alu_result;
+	logic [63:0] alu_raw_result;
+	logic [63:0] execute_target;
+	logic redirect;
+	logic [63:0] redirect_pc;
+	logic load_use_stall;
 	logic pipeline_stall;
-	logic pipeline_flush;
-	assign if_instr = fetch_instr;
-	assign rs1 = fetch_instr[19:15];
-	assign rs2 = fetch_instr[24:20];
-	assign pipeline_stall = !fetch_valid;
-	assign pipeline_flush = 1'b0;
-	assign fetch_consume = fetch_valid;
 
-	instruction_fetch fetch (
-		.clk (clk),
-		.reset (reset),
-		.entry (entry),
-		.consume (fetch_consume),
-		.fetch_pc (fetch_pc),
-		.fetch_instr (fetch_instr),
-		.fetch_valid (fetch_valid),
-		.m_axi_awid (m_axi_awid),
-		.m_axi_awaddr (m_axi_awaddr),
-		.m_axi_awlen (m_axi_awlen),
-		.m_axi_awsize (m_axi_awsize),
-		.m_axi_awburst (m_axi_awburst),
-		.m_axi_awlock (m_axi_awlock),
-		.m_axi_awcache (m_axi_awcache),
-		.m_axi_awprot (m_axi_awprot),
-		.m_axi_awvalid (m_axi_awvalid),
-		.m_axi_awready (m_axi_awready),
-		.m_axi_wdata (m_axi_wdata),
-		.m_axi_wstrb (m_axi_wstrb),
-		.m_axi_wlast (m_axi_wlast),
-		.m_axi_wvalid (m_axi_wvalid),
-		.m_axi_wready (m_axi_wready),
-		.m_axi_bid (m_axi_bid),
-		.m_axi_bresp (m_axi_bresp),
-		.m_axi_bvalid (m_axi_bvalid),
-		.m_axi_bready (m_axi_bready),
-		.m_axi_arid (m_axi_arid),
-		.m_axi_araddr (m_axi_araddr),
-		.m_axi_arlen (m_axi_arlen),
-		.m_axi_arsize (m_axi_arsize),
-		.m_axi_arburst (m_axi_arburst),
-		.m_axi_arlock (m_axi_arlock),
-		.m_axi_arcache (m_axi_arcache),
-		.m_axi_arprot (m_axi_arprot),
-		.m_axi_arvalid (m_axi_arvalid),
-		.m_axi_arready (m_axi_arready),
-		.m_axi_rid (m_axi_rid),
-		.m_axi_rdata (m_axi_rdata),
-		.m_axi_rresp (m_axi_rresp),
-		.m_axi_rlast (m_axi_rlast),
-		.m_axi_rvalid (m_axi_rvalid),
-		.m_axi_rready (m_axi_rready),
-		.m_axi_acvalid (m_axi_acvalid),
-		.m_axi_acready (m_axi_acready),
-		.m_axi_acaddr (m_axi_acaddr),
-		.m_axi_acsnoop (m_axi_acsnoop)
+	logic [63:0] ecall_ret;
+	logic [63:0] write_data;
+	logic write_enable;
+	logic [63:0] d_load_data;
+	logic d_read_ready;
+	logic d_write_ready;
+	logic [63:0] syscall_args [0:7];
+
+	// Instruction cache
+	logic i_cpu_req_valid, i_cpu_req_ready;
+	logic i_cpu_resp_valid;
+	logic [63:0] i_cpu_resp_rdata;
+	logic i_mem_read_req;
+	logic [63:0] i_mem_read_addr;
+	logic i_mem_read_valid;
+	logic [63:0] i_mem_read_data;
+
+	l1_i_cache #(.CACHE_BYTES(16384)) i_cache (
+		.clk(clk), .reset(reset),
+		.cpu_req_valid(i_cpu_req_valid), .cpu_req_ready(i_cpu_req_ready),
+		.cpu_req_addr(pc), .cpu_resp_valid(i_cpu_resp_valid),
+		.cpu_resp_rdata(i_cpu_resp_rdata),
+		.mem_read_req(i_mem_read_req), .mem_read_addr(i_mem_read_addr),
+		.mem_read_valid(i_mem_read_valid), .mem_read_data(i_mem_read_data)
 	);
 
-	decoder decode (
-		.instr (if_instr),
-		.codeword (codeword),
-		.rd (rd),
-		.has_rd (has_rd)
+	// Data cache
+	logic d_cpu_req_valid, d_cpu_req_ready;
+	logic d_cpu_req_write;
+	logic [63:0] d_cpu_req_addr;
+	logic [63:0] d_cpu_req_wdata;
+	logic [7:0] d_cpu_req_wstrb;
+	logic d_cpu_resp_valid;
+	logic [63:0] d_cpu_resp_rdata;
+	logic d_mem_read_req;
+	logic [63:0] d_mem_read_addr;
+	logic d_mem_read_valid;
+	logic [63:0] d_mem_read_data;
+	logic d_mem_write_req;
+	logic [63:0] d_mem_write_addr;
+	logic [63:0] d_mem_write_data;
+	logic [7:0] d_mem_write_strb;
+	logic d_mem_write_ready;
+	logic d_pending;
+
+	assign d_cpu_req_valid = ex_mem.valid && (ex_mem.control.mem_read || ex_mem.control.mem_write) && !d_pending;
+	assign d_cpu_req_write = ex_mem.control.mem_write;
+	assign d_cpu_req_addr = ex_mem.alu_result;
+
+	always_comb begin
+		d_cpu_req_wdata = '0;
+		d_cpu_req_wstrb = '0;
+		case (ex_mem.codeword)
+			SB: begin d_cpu_req_wdata = {{56{1'b0}},ex_mem.regB[7:0]} << (64'(ex_mem.alu_result[2:0]) * 64'd8); d_cpu_req_wstrb[ex_mem.alu_result[2:0]] = 1'b1; end
+			SH: begin d_cpu_req_wdata = {{48{1'b0}},ex_mem.regB[15:0]} << (64'(ex_mem.alu_result[2:0]) * 64'd8); d_cpu_req_wstrb[ex_mem.alu_result[2:0]] = 1'b1; d_cpu_req_wstrb[ex_mem.alu_result[2:0]+3'd1] = 1'b1; end
+			SW: begin d_cpu_req_wdata = {{32{1'b0}},ex_mem.regB[31:0]} << (64'(ex_mem.alu_result[2:0]) * 64'd8); d_cpu_req_wstrb[ex_mem.alu_result[2:0]] = 1'b1; d_cpu_req_wstrb[ex_mem.alu_result[2:0]+3'd1] = 1'b1; d_cpu_req_wstrb[ex_mem.alu_result[2:0]+3'd2] = 1'b1; d_cpu_req_wstrb[ex_mem.alu_result[2:0]+3'd3] = 1'b1; end
+			SD: begin d_cpu_req_wdata = ex_mem.regB; d_cpu_req_wstrb = 8'hff; end
+			default: begin d_cpu_req_wdata = ex_mem.regB; d_cpu_req_wstrb = 8'hff; end
+		endcase
+	end
+
+	l1_d_cache #(.CACHE_BYTES(65536)) d_cache (
+		.clk(clk), .reset(reset),
+		.cpu_req_valid(d_cpu_req_valid), .cpu_req_ready(d_cpu_req_ready),
+		.cpu_req_write(d_cpu_req_write), .cpu_req_addr(d_cpu_req_addr),
+		.cpu_req_wdata(d_cpu_req_wdata), .cpu_req_wstrb(d_cpu_req_wstrb),
+		.cpu_resp_valid(d_cpu_resp_valid), .cpu_resp_rdata(d_cpu_resp_rdata),
+		.mem_read_req(d_mem_read_req), .mem_read_addr(d_mem_read_addr),
+		.mem_read_valid(d_mem_read_valid), .mem_read_data(d_mem_read_data),
+		.mem_write_req(d_mem_write_req), .mem_write_addr(d_mem_write_addr),
+		.mem_write_data(d_mem_write_data), .mem_write_strb(d_mem_write_strb),
+		.mem_write_ready(d_mem_write_ready)
 	);
 
-	decoder decode_pipeline_instruction (
-		.instr (if_id.instr),
-		.codeword (id_codeword),
-		.rd (),
-		.has_rd (id_has_rd)
+	decoder decode_if (
+		.instr(if_id.instr), .codeword(id_codeword), .rd(), .has_rd(has_rd)
 	);
+
+	assign rs1 = if_id.instr[19:15];
+	assign rs2 = if_id.instr[24:20];
 
 	regfile registers (
-		.rs1_data (regA_value),
-		.rs2_data (regB_value),
-		.clk (clk),
-		.reset (reset),
-		.initial_sp (stackptr),
-		.rs1 (rs1),
-		.rs2 (rs2),
-		.rd (mem_wb.rd),
-		.wdata (write_data),
-		.write_enable (write_enable)
-	);
-
-	alu execute_alu (
-		.result (alu_result),
-		.a (id_ex.regA),
-		.b (id_ex.control.alu_src ? id_ex.immediate : id_ex.regB),
-		.codeword (id_ex.codeword)
+		.rs1_data(regA_value), .rs2_data(regB_value),
+		.syscall_a0(syscall_args[0]), .syscall_a1(syscall_args[1]),
+		.syscall_a2(syscall_args[2]), .syscall_a3(syscall_args[3]),
+		.syscall_a4(syscall_args[4]), .syscall_a5(syscall_args[5]),
+		.syscall_a6(syscall_args[6]), .syscall_a7(syscall_args[7]),
+		.clk(clk), .reset(reset), .initial_sp(stackptr),
+		.rs1(rs1), .rs2(rs2), .rd(mem_wb.rd),
+		.wdata(write_data), .write_enable(write_enable)
 	);
 
 	always_comb begin
 		decode_control = '0;
-		immediate = {{52{if_id.instr[31]}}, if_id.instr[31:20]}; // Assuming Standard I-type immediate + sign extension
-		pc_plus_offset = if_id.pc_plus_1 + immediate;
-		write_enable = mem_wb.valid && mem_wb.control.reg_write;
-		mem_data = ex_mem.alu_result;
-
+		immediate = {{52{if_id.instr[31]}}, if_id.instr[31:20]};
+		rd = if_id.instr[11:7];
 		case (id_codeword)
-			LUI: begin
-				immediate = {{32{if_id.instr[31]}}, if_id.instr[31:12], 12'b0}; // U - type immediate + sign extension
-				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = id_has_rd;
+			LUI: begin immediate={{32{if_id.instr[31]}},if_id.instr[31:12],12'b0}; decode_control.alu_src=1'b1; decode_control.reg_write=has_rd; end
+			AUIPC: begin immediate={{32{if_id.instr[31]}},if_id.instr[31:12],12'b0}; decode_control.alu_src=1'b1; decode_control.reg_write=has_rd; end
+			JAL: begin immediate={{43{if_id.instr[31]}},if_id.instr[31],if_id.instr[19:12],if_id.instr[20],if_id.instr[30:21],1'b0}; decode_control.jump=1'b1; decode_control.reg_write=has_rd; end
+			JALR: begin immediate={{52{if_id.instr[31]}},if_id.instr[31:20]}; decode_control.jump=1'b1; decode_control.alu_src=1'b1; decode_control.reg_write=has_rd; end
+			BEQ,BNE,BLT,BGE,BLTU,BGEU: begin immediate={{51{if_id.instr[31]}},if_id.instr[31],if_id.instr[7],if_id.instr[30:25],if_id.instr[11:8],1'b0}; decode_control.branch=1'b1; end
+			LB,LH,LW,LBU,LHU,LWU,LD: begin immediate={{52{if_id.instr[31]}},if_id.instr[31:20]}; decode_control.alu_src=1'b1; decode_control.mem_read=1'b1; decode_control.mem_to_reg=2'b01; decode_control.reg_write=has_rd; end
+			SB,SH,SW,SD: begin immediate={{52{if_id.instr[31]}},if_id.instr[31:25],if_id.instr[11:7]}; decode_control.alu_src=1'b1; decode_control.mem_write=1'b1; end
+			ADDI,SLTI,SLTIU,XORI,ORI,ANDI,ADDIW: begin decode_control.alu_src=1'b1; decode_control.reg_write=has_rd; end
+			SLLI,SRLI,SRAI: begin immediate={{58{1'b0}},if_id.instr[25:20]}; decode_control.alu_src=1'b1; decode_control.reg_write=has_rd; end
+			SLLIW,SRLIW,SRAIW: begin immediate={{59{1'b0}},if_id.instr[24:20]}; decode_control.alu_src=1'b1; decode_control.reg_write=has_rd; end
+			ADD,SUB,SLL,SLT,SLTU,XOR,SRL,SRA,OR,AND,
+			MUL,MULH,MULHSU,MULHU,DIV,DIVU,REM,REMU,
+			ADDW,SUBW,SLLW,SRLW,SRAW,MULW,DIVW,DIVUW,REMW,REMUW: decode_control.reg_write=has_rd;
+			ECALL: begin decode_control.reg_write=1'b1; rd=5'd10; decode_control.mem_to_reg=2'b10; end
+			default: begin end
+		endcase
+	end
+
+	always_comb begin
+		id_regA = regA_value;
+		id_regB = regB_value;
+		if (ex_mem.valid && ex_mem.control.reg_write && ex_mem.rd != 0) begin
+			if (ex_mem.rd == rs1 && !ex_mem.control.mem_read) id_regA = ex_mem.alu_result;
+			if (ex_mem.rd == rs2 && !ex_mem.control.mem_read) id_regB = ex_mem.alu_result;
+		end
+		if (mem_wb.valid && mem_wb.control.reg_write && mem_wb.rd != 0) begin
+			if (mem_wb.rd == rs1) id_regA = (mem_wb.control.mem_to_reg == 2'b01) ? mem_wb.loaded_data : mem_wb.alu_result;
+			if (mem_wb.rd == rs2) id_regB = (mem_wb.control.mem_to_reg == 2'b01) ? mem_wb.loaded_data : mem_wb.alu_result;
+		end
+	end
+
+	logic [63:0] ex_operandA, ex_operandB;
+	always_comb begin
+		ex_operandA=id_ex.regA; ex_operandB=id_ex.regB;
+		if (ex_mem.valid && ex_mem.control.reg_write && ex_mem.rd != 0 && !ex_mem.control.mem_read) begin
+			if (ex_mem.rd == id_ex.rs1) ex_operandA=ex_mem.alu_result;
+			if (ex_mem.rd == id_ex.rs2) ex_operandB=ex_mem.alu_result;
+		end
+		if (mem_wb.valid && mem_wb.control.reg_write && mem_wb.rd != 0) begin
+			if (mem_wb.rd == id_ex.rs1) ex_operandA=(mem_wb.control.mem_to_reg==2'b01)?mem_wb.loaded_data:mem_wb.alu_result;
+			if (mem_wb.rd == id_ex.rs2) ex_operandB=(mem_wb.control.mem_to_reg==2'b01)?mem_wb.loaded_data:mem_wb.alu_result;
+		end
+	end
+
+	logic [63:0] alu_a, alu_b;
+	alu execute_alu (.result(alu_raw_result), .a(alu_a), .b(alu_b), .codeword(id_ex.codeword));
+	always_comb begin
+		alu_a=ex_operandA; alu_b=id_ex.control.alu_src?id_ex.immediate:ex_operandB;
+		if (id_ex.codeword==AUIPC) begin alu_a=id_ex.pc; alu_b=id_ex.immediate; end
+	end
+
+	always_comb begin
+		execute_alu_result = alu_raw_result;
+		execute_target=id_ex.pc_plus_1+id_ex.immediate;
+		redirect=1'b0;
+		redirect_pc='0;
+		if (id_ex.valid) begin
+			case (id_ex.codeword)
+				JAL: begin execute_target=id_ex.pc+id_ex.immediate; redirect=1'b1; redirect_pc=execute_target; execute_alu_result=id_ex.pc_plus_1; end
+				JALR: begin execute_target=(ex_operandA+id_ex.immediate)&~64'b1; redirect=1'b1; redirect_pc=execute_target; execute_alu_result=id_ex.pc_plus_1; end
+				AUIPC: execute_alu_result=id_ex.pc+id_ex.immediate;
+				BEQ: if (ex_operandA==ex_operandB) begin redirect=1'b1; redirect_pc=id_ex.pc+id_ex.immediate; end
+				BNE: if (ex_operandA!=ex_operandB) begin redirect=1'b1; redirect_pc=id_ex.pc+id_ex.immediate; end
+				BLT: if ($signed(ex_operandA)<$signed(ex_operandB)) begin redirect=1'b1; redirect_pc=id_ex.pc+id_ex.immediate; end
+				BGE: if ($signed(ex_operandA)>= $signed(ex_operandB)) begin redirect=1'b1; redirect_pc=id_ex.pc+id_ex.immediate; end
+				BLTU: if (ex_operandA<ex_operandB) begin redirect=1'b1; redirect_pc=id_ex.pc+id_ex.immediate; end
+				BGEU: if (ex_operandA>=ex_operandB) begin redirect=1'b1; redirect_pc=id_ex.pc+id_ex.immediate; end
+				default: begin end
+			endcase
+		end
+	end
+
+	assign load_use_stall = id_ex.valid && id_ex.control.mem_read && if_id.valid &&
+		(id_ex.rd != 0) && ((id_ex.rd == rs1) || (id_ex.rd == rs2));
+	assign d_read_ready = d_cpu_resp_valid;
+	assign d_write_ready = d_cpu_resp_valid;
+	assign pipeline_stall = !fetch_valid || load_use_stall ||
+		(ex_mem.valid && ex_mem.control.mem_read && !d_read_ready);
+
+	always_comb begin
+		d_load_data='0;
+		if (ex_mem.valid) begin
+			case (ex_mem.codeword)
+				LB: d_load_data={{56{d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8+7]}},d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8 +: 8]};
+				LH: d_load_data={{48{d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8+15]}},d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8 +: 16]};
+				LW: d_load_data={{32{d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8+31]}},d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8 +: 32]};
+				LBU: d_load_data={{56{1'b0}},d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8 +: 8]};
+				LHU: d_load_data={{48{1'b0}},d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8 +: 16]};
+				LWU: d_load_data={{32{1'b0}},d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8 +: 32]};
+				LD: d_load_data=d_cpu_resp_rdata;
+				default: d_load_data=d_cpu_resp_rdata;
+			endcase
+		end
+	end
+
+	always_ff @(posedge clk) begin
+		if (reset) begin
+			pc <= entry;
+			fetch_pc <= entry;
+			fetch_instr <= '0;
+			fetch_valid <= 1'b0;
+			i_pending <= 1'b0;
+			i_pending_pc <= '0;
+			i_cancel_resp <= 1'b0;
+			d_pending <= 1'b0;
+			if_id <= '0; id_ex <= '0; ex_mem <= '0; mem_wb <= '0;
+		end else begin
+			if (redirect) begin
+				pc <= redirect_pc;
+				fetch_valid <= 1'b0;
+				i_pending <= 1'b0;
+				i_cancel_resp <= 1'b1;
+				if_id <= '0;
+				id_ex <= '0;
+				ex_mem.valid <= id_ex.valid;
+				ex_mem.instr <= id_ex.instr;
+				ex_mem.pc <= id_ex.pc;
+				ex_mem.pc_plus_1 <= id_ex.pc_plus_1;
+				ex_mem.alu_result <= execute_alu_result;
+				ex_mem.pc_plus_1_plus_offset <= execute_target;
+				ex_mem.regB <= ex_operandB;
+				ex_mem.rd <= id_ex.rd;
+				ex_mem.codeword <= id_ex.codeword;
+				ex_mem.control <= id_ex.control;
+				mem_wb <= ex_mem;
+			end else begin
+				if (i_cpu_req_valid && i_cpu_req_ready) begin
+					i_pending <= 1'b1;
+					i_pending_pc <= pc;
+				end
+				if (i_cpu_resp_valid && i_pending && !i_cancel_resp) begin
+					i_pending <= 1'b0;
+					fetch_pc <= i_pending_pc;
+					fetch_instr <= i_pending_pc[2] ? i_cpu_resp_rdata[63:32] : i_cpu_resp_rdata[31:0];
+					fetch_valid <= 1'b1;
+				end else if (i_cancel_resp && i_cpu_resp_valid) begin
+					i_pending <= 1'b0;
+					i_cancel_resp <= 1'b0;
+				end
+
+				if (!pipeline_stall) begin
+					if (fetch_valid) begin
+						if_id.valid <= 1'b1;
+						if_id.instr <= fetch_instr;
+						if_id.pc <= fetch_pc;
+						if_id.pc_plus_1 <= fetch_pc + 64'd4;
+						pc <= redirect ? redirect_pc : fetch_pc + 64'd4;
+						fetch_valid <= 1'b0;
+					end else begin
+						if_id <= '0;
+					end
+
+					id_ex.valid <= if_id.valid;
+					id_ex.instr <= if_id.instr;
+					id_ex.pc <= if_id.pc;
+					id_ex.pc_plus_1 <= if_id.pc_plus_1;
+					id_ex.regA <= id_regA;
+					id_ex.regB <= id_regB;
+					id_ex.immediate <= immediate;
+					id_ex.rd <= rd;
+					id_ex.rs1 <= rs1;
+					id_ex.rs2 <= rs2;
+					id_ex.codeword <= id_codeword;
+					id_ex.control <= decode_control;
+
+					ex_mem.valid <= id_ex.valid;
+					ex_mem.instr <= id_ex.instr;
+					ex_mem.pc <= id_ex.pc;
+					ex_mem.pc_plus_1 <= id_ex.pc_plus_1;
+					ex_mem.alu_result <= execute_alu_result;
+					ex_mem.pc_plus_1_plus_offset <= execute_target;
+					ex_mem.regB <= ex_operandB;
+					ex_mem.rd <= id_ex.rd;
+					ex_mem.codeword <= id_ex.codeword;
+					ex_mem.control <= id_ex.control;
+
+					mem_wb.valid <= ex_mem.valid;
+					mem_wb.instr <= ex_mem.instr;
+					mem_wb.pc <= ex_mem.pc;
+					mem_wb.pc_plus_1 <= ex_mem.pc_plus_1;
+					mem_wb.alu_result <= ex_mem.alu_result;
+					mem_wb.pc_plus_1_plus_offset <= ex_mem.pc_plus_1_plus_offset;
+					mem_wb.loaded_data <= d_load_data;
+					mem_wb.rd <= ex_mem.rd;
+					mem_wb.codeword <= ex_mem.codeword;
+					mem_wb.control <= ex_mem.control;
+				end else if (load_use_stall) begin
+					// Hold decode/front-end; let the existing EX instruction retire to EX/MEM.
+					ex_mem.valid <= id_ex.valid;
+					ex_mem.instr <= id_ex.instr;
+					ex_mem.pc <= id_ex.pc;
+					ex_mem.pc_plus_1 <= id_ex.pc_plus_1;
+					ex_mem.alu_result <= execute_alu_result;
+					ex_mem.pc_plus_1_plus_offset <= execute_target;
+					ex_mem.regB <= ex_operandB;
+					ex_mem.rd <= id_ex.rd;
+					ex_mem.codeword <= id_ex.codeword;
+					ex_mem.control <= id_ex.control;
+					mem_wb.valid <= ex_mem.valid;
+					mem_wb.instr <= ex_mem.instr;
+					mem_wb.alu_result <= ex_mem.alu_result;
+					mem_wb.loaded_data <= d_load_data;
+					mem_wb.rd <= ex_mem.rd;
+					mem_wb.codeword <= ex_mem.codeword;
+					mem_wb.control <= ex_mem.control;
+				end
 			end
-			AUIPC: begin
-				immediate = {{32{if_id.instr[31]}}, if_id.instr[31:12], 12'b0}; // U - type immediate + sign extension
-				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = id_has_rd;
-			end
-			ADDI, SLTI, SLTIU, XORI, ORI, ANDI, ADDIW: begin // I - type immediate + sign extension
-				immediate = {{52{if_id.instr[31]}}, if_id.instr[31:20]};
-				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = id_has_rd;
-			end
-			SLLI, SRLI, SRAI: begin
-				immediate = {{58{1'b0}}, if_id.instr[25:20]};
-				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = id_has_rd;
-			end
-			SLLIW, SRLIW, SRAIW: begin // Shift amount uses instr[24:20] for word variants
-				immediate = {{59{1'b0}}, if_id.instr[24:20]};
-				decode_control.alu_src = 1'b1;
-				decode_control.reg_write = id_has_rd;
-			end
-			ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND,
-			MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU,
-			ADDW, SUBW, SLLW, SRLW, SRAW, MULW, DIVW, DIVUW, REMW, REMUW: begin
-				decode_control.reg_write = id_has_rd;
+
+			if (d_cpu_req_valid && d_cpu_req_ready) d_pending <= 1'b1;
+			if (d_cpu_resp_valid) d_pending <= 1'b0;
+		end
+	end
+
+	assign i_cpu_req_valid = !i_pending && !reset;
+
+	// Shared AXI read/write arbiter
+	typedef enum logic [2:0] {AR_IDLE, AR_D, AR_I, AR_DATA} ar_state_t;
+	ar_state_t ar_state;
+	logic ar_is_d;
+	logic [63:0] ar_addr;
+	logic [2:0] aw_wbeat;
+	logic [63:0] aw_addr;
+
+	typedef enum logic [2:0] {AW_IDLE, AW_ADDR, AW_DATA, AW_RESP} aw_state_t;
+	aw_state_t aw_state;
+
+	always_comb begin
+		m_axi_arid='0; m_axi_araddr='0; m_axi_arlen=8'd7;
+		m_axi_arsize=3'b011; m_axi_arburst=2'b01; m_axi_arlock=1'b0;
+		m_axi_arcache='0; m_axi_arprot='0; m_axi_arvalid=1'b0;
+		m_axi_rready=1'b0;
+		i_mem_read_valid=1'b0; i_mem_read_data='0;
+		d_mem_read_valid=1'b0; d_mem_read_data='0;
+		case (ar_state)
+			AR_D: begin m_axi_arvalid=1'b1; m_axi_araddr=d_mem_read_addr & ~64'h3f; end
+			AR_I: begin m_axi_arvalid=1'b1; m_axi_araddr=i_mem_read_addr & ~64'h3f; end
+			AR_DATA: begin
+				m_axi_rready=1'b1;
+				if (m_axi_rvalid) begin
+					if (ar_is_d) begin d_mem_read_valid=1'b1; d_mem_read_data=m_axi_rdata; end
+					else begin i_mem_read_valid=1'b1; i_mem_read_data=m_axi_rdata; end
+				end
 			end
 			default: begin end
 		endcase
 	end
 
-	pipeline_controller pipe (
-		.clk (clk),
-		.reset (reset),
-		.stall (pipeline_stall),
-		.flush (pipeline_flush),
-		.fetch_instr (if_instr),
-		.fetch_pc (fetch_pc),
-		.regA_in ((id_codeword == AUIPC) ? if_id.pc : regA_value),
-		.regB_in (regB_value),
-		.immediate_in (immediate),
-		.rd_in (rd),
-		.rs1_in (rs1),
-		.rs2_in (rs2),
-		.codeword_in (id_codeword),
-		.control_in (decode_control),
-		.alu_result_in (alu_result),
-		.pc_plus_offset_in (pc_plus_offset),
-		.loaded_data_in (mem_data),
-		.if_id (if_id),
-		.id_ex (id_ex),
-		.ex_mem (ex_mem),
-		.mem_wb (mem_wb)
-	);
-
-	always_comb begin
-		write_data = mem_wb.alu_result;
-		if (mem_wb.control.mem_to_reg == 2'b01)
-			write_data = mem_wb.loaded_data;
+	always_ff @(posedge clk or posedge reset) begin
+		if (reset) begin ar_state<=AR_IDLE; ar_is_d<=1'b0; ar_addr<=0;
+		end else begin
+			case (ar_state)
+				AR_IDLE: begin
+					if (d_mem_read_req) begin ar_is_d<=1'b1; ar_addr<=d_mem_read_addr & ~64'h3f; ar_state<=AR_D; end
+					else if (i_mem_read_req) begin ar_is_d<=1'b0; ar_addr<=i_mem_read_addr & ~64'h3f; ar_state<=AR_I; end
+				end
+				AR_D: if (m_axi_arvalid && m_axi_arready) ar_state<=AR_DATA;
+				AR_I: if (m_axi_arvalid && m_axi_arready) ar_state<=AR_DATA;
+				AR_DATA: if (m_axi_rvalid && m_axi_rlast) ar_state<=AR_IDLE;
+				default: ar_state<=AR_IDLE;
+			endcase
+		end
 	end
 
-	// Format the codeword name for display purposes to keep wp1 working
-	function automatic string codeword_text(input codeword_t value);
-		if (value == FENCE_I)
-			return "FENCE.I";
-		return value.name();
-	endfunction
+	always_comb begin
+		m_axi_awid='0; m_axi_awaddr='0; m_axi_awlen=8'd7; m_axi_awsize=3'b011;
+		m_axi_awburst=2'b01; m_axi_awlock=1'b0; m_axi_awcache='0; m_axi_awprot='0;
+		m_axi_awvalid=1'b0; m_axi_wdata='0; m_axi_wstrb='0; m_axi_wlast=1'b0; m_axi_wvalid=1'b0;
+		m_axi_bready=1'b0; d_mem_write_ready=1'b0;
+		case (aw_state)
+			AW_ADDR: begin m_axi_awvalid=1'b1; m_axi_awaddr=d_mem_write_addr & ~64'h1f; end
+			AW_DATA: begin
+				m_axi_wvalid=1'b1; m_axi_wdata=d_mem_write_data; m_axi_wstrb=d_mem_write_strb;
+				m_axi_wlast=(aw_wbeat==3'd3);
+				if (m_axi_wready) d_mem_write_ready=1'b1;
+			end
+			AW_RESP: m_axi_bready=1'b1;
+			default: begin end
+		endcase
+	end
+
+	always_ff @(posedge clk or posedge reset) begin
+		if (reset) begin aw_state<=AW_IDLE; aw_wbeat<=0; aw_addr<=0;
+		end else begin
+			case (aw_state)
+				AW_IDLE: if (d_mem_write_req) begin aw_addr<=d_mem_write_addr & ~64'h1f; aw_state<=AW_ADDR; end
+				AW_ADDR: if (m_axi_awvalid && m_axi_awready) begin aw_wbeat<=0; aw_state<=AW_DATA; end
+				AW_DATA: if (m_axi_wvalid && m_axi_wready) begin
+					if (aw_wbeat==3'd3) aw_state<=AW_RESP; else aw_wbeat<=aw_wbeat+1'b1;
+				end
+				AW_RESP: if (m_axi_bvalid) aw_state<=AW_IDLE;
+				default: aw_state<=AW_IDLE;
+			endcase
+		end
+	end
+
+	assign m_axi_acready = 1'b1;
+
+	// Commit and DPI calls
+	assign write_enable = mem_wb.valid && mem_wb.control.reg_write && mem_wb.rd != 5'd0;
+	always_comb begin
+		write_data=mem_wb.alu_result;
+		case (mem_wb.control.mem_to_reg)
+			2'b01: write_data=mem_wb.loaded_data;
+			2'b10: write_data=ecall_ret;
+			default: begin end
+		endcase
+	end
+
+	always_ff @(posedge clk) begin
+		if (!reset && ex_mem.valid && ex_mem.codeword==ECALL) begin
+			do_ecall(syscall_args[7],syscall_args[0],syscall_args[1],syscall_args[2],syscall_args[3],syscall_args[4],syscall_args[5],syscall_args[6],ecall_ret);
+		end
+		if (!reset && d_cpu_req_valid && d_cpu_req_ready) begin
+			case (ex_mem.codeword)
+				SB: do_pending_write(ex_mem.alu_result,{{56{1'b0}},ex_mem.regB[7:0]},1);
+				SH: do_pending_write(ex_mem.alu_result,{{48{1'b0}},ex_mem.regB[15:0]},2);
+				SW: do_pending_write(ex_mem.alu_result,{{32{1'b0}},ex_mem.regB[31:0]},4);
+				SD: do_pending_write(ex_mem.alu_result,ex_mem.regB,8);
+				default: begin end
+			endcase
+		end
+		if (!reset && d_pending && d_cpu_resp_valid && ex_mem.control.mem_write)
+			do_finish_write(ex_mem.alu_result, (ex_mem.codeword==SB)?1:(ex_mem.codeword==SH)?2:(ex_mem.codeword==SW)?4:(ex_mem.codeword==SD)?8:0);
+	end
 
 	always_ff @(posedge clk) begin
 		if (!reset && fetch_valid) begin
-			if (if_instr == 32'b0) begin
-				for (int reg_index = 0; reg_index < 32; reg_index = reg_index + 1)
-					$display("Register %0d: %016x", reg_index, registers.read_reg(reg_index));
+			if (fetch_instr == 32'b0) begin
+				for (int reg_index=0; reg_index<32; reg_index=reg_index+1)
+					$display("Register %0d: %016x",reg_index,registers.read_reg(5'(reg_index)));
 				$finish;
-			end else if (has_rd) begin
-				$display("%x: %s %0d", fetch_pc, codeword_text(codeword), rd);
-			end else begin
-				$display("%x: %s", fetch_pc, codeword_text(codeword));
 			end
 		end
 	end
 
 	initial begin
-		$display("Initializing top, entry point = 0x%x", entry);
+		$display("Initializing top, entry point = 0x%x",entry);
 	end
 endmodule
