@@ -13,7 +13,9 @@ typedef enum logic [6:0] {
 	ADDW, SUBW, SLLW, SRLW, SRAW,
 	MULW, DIVW, DIVUW, REMW, REMUW,
 	FENCE, FENCE_I, ECALL, EBREAK,
-	CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI
+	CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
+	// RV64A: AMO_W/AMO_D cover every read-modify-write op; the op is instr[31:27].
+	LR_W, LR_D, SC_W, SC_D, AMO_W, AMO_D
 } codeword_t;
 
 module decoder (
@@ -255,6 +257,22 @@ module decoder (
 					endcase
 				end
 			end
+			OPCODE_AMO: begin
+				has_rd = 1'b1;
+				if (funct3 == 3'b010 || funct3 == 3'b011) begin
+					case (instr[31:27])
+						5'b00010: if (funct3 == 3'b010) codeword = LR_W; else codeword = LR_D;
+						5'b00011: if (funct3 == 3'b010) codeword = SC_W; else codeword = SC_D;
+						5'b00001, 5'b00000, 5'b00100, 5'b01100, 5'b01000,
+						5'b10000, 5'b10100, 5'b11000, 5'b11100:
+							if (funct3 == 3'b010) codeword = AMO_W; else codeword = AMO_D;
+						default: begin codeword = UNKNOWN; has_rd = 1'b0; end
+					endcase
+				end else begin
+					codeword = UNKNOWN;
+					has_rd = 1'b0;
+				end
+			end
 			OPCODE_MISC_MEM: begin
 				has_rd = 1'b0;
 				case (funct3)
@@ -450,6 +468,11 @@ module alu (
 
 			LUI:   result = b;
 			AUIPC: result = a + b;
+			// Effective address: rs1 + immediate (alu_src selects the immediate).
+			LB, LH, LW, LBU, LHU, LWU, LD,
+			SB, SH, SW, SD: result = a + b;
+			// Atomics have no offset: the address is rs1 and b carries rs2.
+			LR_W, LR_D, SC_W, SC_D, AMO_W, AMO_D: result = a;
 			default:   result = 64'b0;
 		endcase
 	end
@@ -483,7 +506,9 @@ module l1_cache #(
 	output logic [ADDR_WIDTH-1:0] mem_write_addr,
 	output logic [DATA_WIDTH-1:0] mem_write_data,
 	output logic [DATA_WIDTH/8-1:0] mem_write_strb,
-	input logic mem_write_ready
+	input logic mem_write_ready,
+	input logic snoop_valid,
+	input logic [ADDR_WIDTH-1:0] snoop_addr
 );
 	localparam int BYTES_PER_BEAT = DATA_WIDTH / 8;
 	localparam int BEATS_PER_LINE = LINE_BYTES / BYTES_PER_BEAT;
@@ -514,6 +539,9 @@ module l1_cache #(
 	logic victim_way;
 	logic [BEAT_BITS-1:0] transfer_beat;
 	logic [DATA_WIDTH-1:0] response_data;
+
+	wire [INDEX_BITS-1:0] snoop_set = snoop_addr[OFFSET_BITS +: INDEX_BITS];
+	wire [TAG_BITS-1:0] snoop_tag = snoop_addr[ADDR_WIDTH-1 -: TAG_BITS];
 
 	wire hit0 = valid[req_set][0] && (tag[req_set][0] == req_tag);
 	wire hit1 = valid[req_set][1] && (tag[req_set][1] == req_tag);
@@ -637,6 +665,15 @@ module l1_cache #(
 				S_RESP: state <= S_IDLE;
 				default: state <= S_IDLE;
 			endcase
+
+			// The fake OS merges pending stores into RAM before a syscall touches
+			// memory, so dropping a snooped line is safe even when it is dirty.
+			if (snoop_valid)
+				for (way_i = 0; way_i < WAYS; way_i = way_i + 1)
+					if (tag[snoop_set][way_i] == snoop_tag) begin
+						valid[snoop_set][way_i] <= 1'b0;
+						dirty[snoop_set][way_i] <= 1'b0;
+					end
 		end
 	end
 
@@ -654,7 +691,9 @@ module l1_i_cache #(
 	output logic mem_read_req,
 	output logic [63:0] mem_read_addr,
 	input logic mem_read_valid,
-	input logic [63:0] mem_read_data
+	input logic [63:0] mem_read_data,
+	input logic snoop_valid,
+	input logic [63:0] snoop_addr
 );
 	l1_cache #(
 		.WRITE_ENABLE(1'b0),
@@ -666,7 +705,8 @@ module l1_i_cache #(
 		.cpu_resp_valid, .cpu_resp_rdata,
 		.mem_read_req, .mem_read_addr, .mem_read_valid, .mem_read_data,
 		.mem_write_req(), .mem_write_addr(), .mem_write_data(),
-		.mem_write_strb(), .mem_write_ready(1'b0)
+		.mem_write_strb(), .mem_write_ready(1'b0),
+		.snoop_valid, .snoop_addr
 	);
 endmodule
 
@@ -690,7 +730,9 @@ module l1_d_cache #(
 	output logic [63:0] mem_write_addr,
 	output logic [63:0] mem_write_data,
 	output logic [7:0] mem_write_strb,
-	input logic mem_write_ready
+	input logic mem_write_ready,
+	input logic snoop_valid,
+	input logic [63:0] snoop_addr
 );
 	l1_cache #(
 		.WRITE_ENABLE(1'b1),
@@ -701,7 +743,8 @@ module l1_d_cache #(
 		.cpu_resp_valid, .cpu_resp_rdata,
 		.mem_read_req, .mem_read_addr, .mem_read_valid, .mem_read_data,
 		.mem_write_req, .mem_write_addr, .mem_write_data,
-		.mem_write_strb, .mem_write_ready
+		.mem_write_strb, .mem_write_ready,
+		.snoop_valid, .snoop_addr
 	);
 endmodule
 
@@ -709,10 +752,11 @@ typedef struct packed {
 	logic reg_write;
 	logic mem_read;
 	logic mem_write;
+	logic amo;        // read-modify-write atomic: read phase, then write phase
 	logic branch;
 	logic jump;
 	logic alu_src;
-	logic [1:0] mem_to_reg;
+	logic [1:0] mem_to_reg; // 00 ALU, 01 memory/atomic result, 10 ecall return
 } control_t;
 
 typedef struct packed {
@@ -825,6 +869,7 @@ module top
 	mem_wb_t mem_wb;
 
 	logic [63:0] pc;
+	logic [63:0] if_req_pc; // next I-fetch address (decoupled from pipe PC updates)
 	logic [63:0] fetch_pc;
 	logic [31:0] fetch_instr;
 	logic fetch_valid;
@@ -856,6 +901,12 @@ module top
 	logic d_read_ready;
 	logic d_write_ready;
 	logic [63:0] syscall_args [0:7];
+	logic [63:0] cycle_count;
+
+	always_ff @(posedge clk) begin
+		if (reset) cycle_count <= '0;
+		else cycle_count <= cycle_count + 64'd1;
+	end
 
 	// Instruction cache
 	logic i_cpu_req_valid, i_cpu_req_ready;
@@ -869,10 +920,11 @@ module top
 	l1_i_cache #(.CACHE_BYTES(16384)) i_cache (
 		.clk(clk), .reset(reset),
 		.cpu_req_valid(i_cpu_req_valid), .cpu_req_ready(i_cpu_req_ready),
-		.cpu_req_addr(pc), .cpu_resp_valid(i_cpu_resp_valid),
+		.cpu_req_addr(if_req_pc), .cpu_resp_valid(i_cpu_resp_valid),
 		.cpu_resp_rdata(i_cpu_resp_rdata),
 		.mem_read_req(i_mem_read_req), .mem_read_addr(i_mem_read_addr),
-		.mem_read_valid(i_mem_read_valid), .mem_read_data(i_mem_read_data)
+		.mem_read_valid(i_mem_read_valid), .mem_read_data(i_mem_read_data),
+		.snoop_valid(m_axi_acvalid), .snoop_addr(m_axi_acaddr)
 	);
 
 	// Data cache
@@ -893,22 +945,74 @@ module top
 	logic [7:0] d_mem_write_strb;
 	logic d_mem_write_ready;
 	logic d_pending;
+	logic amo_phase;      // 0: read the old value, 1: write the new value
+	logic [63:0] amo_old; // raw 64-bit cache word captured by the read phase
+	logic resv_valid;     // LR/SC reservation
+	logic [63:0] resv_addr;
 
-	assign d_cpu_req_valid = ex_mem.valid && (ex_mem.control.mem_read || ex_mem.control.mem_write) && !d_pending;
-	assign d_cpu_req_write = ex_mem.control.mem_write;
-	assign d_cpu_req_addr = ex_mem.alu_result;
-
+	wire mem_is_amo = ex_mem.valid && ex_mem.control.amo;
+	wire mem_is_lr = ex_mem.valid && (ex_mem.codeword == LR_W || ex_mem.codeword == LR_D);
+	wire mem_is_sc = ex_mem.valid && (ex_mem.codeword == SC_W || ex_mem.codeword == SC_D);
+	wire sc_fail = mem_is_sc && !(resv_valid && resv_addr == ex_mem.alu_result);
+	// A failed SC never touches memory; it just writes 1 to rd.
+	wire mem_op = ex_mem.valid && (ex_mem.control.mem_read || ex_mem.control.mem_write) && !sc_fail;
+	logic [3:0] mem_size;
 	always_comb begin
-		d_cpu_req_wdata = '0;
-		d_cpu_req_wstrb = '0;
 		case (ex_mem.codeword)
-			SB: begin d_cpu_req_wdata = {{56{1'b0}},ex_mem.regB[7:0]} << (64'(ex_mem.alu_result[2:0]) * 64'd8); d_cpu_req_wstrb[ex_mem.alu_result[2:0]] = 1'b1; end
-			SH: begin d_cpu_req_wdata = {{48{1'b0}},ex_mem.regB[15:0]} << (64'(ex_mem.alu_result[2:0]) * 64'd8); d_cpu_req_wstrb[ex_mem.alu_result[2:0]] = 1'b1; d_cpu_req_wstrb[ex_mem.alu_result[2:0]+3'd1] = 1'b1; end
-			SW: begin d_cpu_req_wdata = {{32{1'b0}},ex_mem.regB[31:0]} << (64'(ex_mem.alu_result[2:0]) * 64'd8); d_cpu_req_wstrb[ex_mem.alu_result[2:0]] = 1'b1; d_cpu_req_wstrb[ex_mem.alu_result[2:0]+3'd1] = 1'b1; d_cpu_req_wstrb[ex_mem.alu_result[2:0]+3'd2] = 1'b1; d_cpu_req_wstrb[ex_mem.alu_result[2:0]+3'd3] = 1'b1; end
-			SD: begin d_cpu_req_wdata = ex_mem.regB; d_cpu_req_wstrb = 8'hff; end
-			default: begin d_cpu_req_wdata = ex_mem.regB; d_cpu_req_wstrb = 8'hff; end
+			LB, LBU, SB: mem_size = 4'd1;
+			LH, LHU, SH: mem_size = 4'd2;
+			LW, LWU, SW, LR_W, SC_W, AMO_W: mem_size = 4'd4;
+			default: mem_size = 4'd8;
 		endcase
 	end
+	// Misaligned accesses (hwprobe reports them as supported) that straddle an
+	// 8-byte beat are done as two cache accesses: split_phase 0, then 1.
+	logic split_phase;
+	logic [63:0] split_lo; // first-beat read data
+	wire [2:0] mem_off = ex_mem.alu_result[2:0];
+	wire mem_cross = mem_op && !mem_is_amo && ({1'b0, mem_off} + mem_size > 4'd8);
+
+	// An AMO finishes on the response to its write phase, a split access on its second beat.
+	wire d_mem_done = d_cpu_resp_valid && (!mem_is_amo || amo_phase) && (!mem_cross || split_phase);
+	wire d_mem_busy = mem_op && !d_mem_done;
+
+	// Snoops for lines a syscall changed arrive one per cycle after the ecall;
+	// keep new requests out of the D-cache until they have all landed.
+	logic [1:0] ecall_guard;
+	wire snoop_block = m_axi_acvalid || (ecall_guard != 2'd0);
+	assign d_cpu_req_valid = mem_op && !d_pending && !snoop_block;
+	assign d_cpu_req_write = mem_is_amo ? amo_phase : ex_mem.control.mem_write;
+	assign d_cpu_req_addr = split_phase ? {ex_mem.alu_result[63:3] + 61'd1, 3'b000} : ex_mem.alu_result;
+
+	wire [31:0] amo_old_word = ex_mem.alu_result[2] ? amo_old[63:32] : amo_old[31:0];
+	wire [63:0] amo_old_val = (ex_mem.codeword == AMO_W) ? {{32{amo_old_word[31]}}, amo_old_word} : amo_old;
+	wire [63:0] amo_src = (ex_mem.codeword == AMO_W) ? {{32{ex_mem.regB[31]}}, ex_mem.regB[31:0]} : ex_mem.regB;
+	logic [63:0] amo_new;
+	always_comb begin
+		// Sign-extending .W operands keeps both signed and unsigned ordering intact.
+		case (ex_mem.instr[31:27])
+			5'b00001: amo_new = amo_src;
+			5'b00000: amo_new = amo_old_val + amo_src;
+			5'b00100: amo_new = amo_old_val ^ amo_src;
+			5'b01100: amo_new = amo_old_val & amo_src;
+			5'b01000: amo_new = amo_old_val | amo_src;
+			5'b10000: amo_new = ($signed(amo_old_val) < $signed(amo_src)) ? amo_old_val : amo_src;
+			5'b10100: amo_new = ($signed(amo_old_val) > $signed(amo_src)) ? amo_old_val : amo_src;
+			5'b11000: amo_new = (amo_old_val < amo_src) ? amo_old_val : amo_src;
+			5'b11100: amo_new = (amo_old_val > amo_src) ? amo_old_val : amo_src;
+			default:  amo_new = amo_src;
+		endcase
+	end
+
+	// Store value (unshifted, as the fake OS wants it) placed across two beats;
+	// split_phase picks which beat goes to the cache.
+	wire [63:0] st_raw = mem_is_amo ? amo_new : ex_mem.regB;
+	wire [63:0] st_value = (mem_size == 4'd8) ? st_raw : (st_raw & ((64'd1 << {mem_size, 3'b000}) - 64'd1));
+	wire [31:0] st_size = {28'b0, mem_size};
+	wire [127:0] st_wide_data = {64'b0, st_value} << {mem_off, 3'b000};
+	wire [15:0] st_wide_strb = ((16'd1 << mem_size) - 16'd1) << mem_off;
+	assign d_cpu_req_wdata = split_phase ? st_wide_data[127:64] : st_wide_data[63:0];
+	assign d_cpu_req_wstrb = split_phase ? st_wide_strb[15:8] : st_wide_strb[7:0];
 
 	l1_d_cache #(.CACHE_BYTES(65536)) d_cache (
 		.clk(clk), .reset(reset),
@@ -920,7 +1024,8 @@ module top
 		.mem_read_valid(d_mem_read_valid), .mem_read_data(d_mem_read_data),
 		.mem_write_req(d_mem_write_req), .mem_write_addr(d_mem_write_addr),
 		.mem_write_data(d_mem_write_data), .mem_write_strb(d_mem_write_strb),
-		.mem_write_ready(d_mem_write_ready)
+		.mem_write_ready(d_mem_write_ready),
+		.snoop_valid(m_axi_acvalid), .snoop_addr(m_axi_acaddr)
 	);
 
 	decoder decode_if (
@@ -960,34 +1065,37 @@ module top
 			MUL,MULH,MULHSU,MULHU,DIV,DIVU,REM,REMU,
 			ADDW,SUBW,SLLW,SRLW,SRAW,MULW,DIVW,DIVUW,REMW,REMUW: decode_control.reg_write=has_rd;
 			ECALL: begin decode_control.reg_write=1'b1; rd=5'd10; decode_control.mem_to_reg=2'b10; end
+			LR_W,LR_D: begin decode_control.mem_read=1'b1; decode_control.mem_to_reg=2'b01; decode_control.reg_write=has_rd; end
+			SC_W,SC_D: begin decode_control.mem_write=1'b1; decode_control.mem_to_reg=2'b01; decode_control.reg_write=has_rd; end
+			AMO_W,AMO_D: begin decode_control.mem_read=1'b1; decode_control.mem_write=1'b1; decode_control.amo=1'b1; decode_control.mem_to_reg=2'b01; decode_control.reg_write=has_rd; end
+			CSRRW,CSRRS,CSRRC,CSRRWI,CSRRSI,CSRRCI: decode_control.reg_write=has_rd;
 			default: begin end
 		endcase
 	end
 
+	// EX/MEM can only forward ALU results; memory, atomic and ecall results are
+	// not known until MEM/WB (the hazard logic below stalls for those).
+	wire ex_mem_fwd = ex_mem.valid && ex_mem.control.reg_write && ex_mem.rd != 0 &&
+		ex_mem.control.mem_to_reg == 2'b00;
+	wire mem_wb_fwd = mem_wb.valid && write_enable && mem_wb.rd != 0;
+
+	// The younger EX/MEM result takes priority over MEM/WB.
 	always_comb begin
 		id_regA = regA_value;
 		id_regB = regB_value;
-		if (ex_mem.valid && ex_mem.control.reg_write && ex_mem.rd != 0) begin
-			if (ex_mem.rd == rs1 && !ex_mem.control.mem_read) id_regA = ex_mem.alu_result;
-			if (ex_mem.rd == rs2 && !ex_mem.control.mem_read) id_regB = ex_mem.alu_result;
-		end
-		if (mem_wb.valid && mem_wb.control.reg_write && mem_wb.rd != 0) begin
-			if (mem_wb.rd == rs1) id_regA = (mem_wb.control.mem_to_reg == 2'b01) ? mem_wb.loaded_data : mem_wb.alu_result;
-			if (mem_wb.rd == rs2) id_regB = (mem_wb.control.mem_to_reg == 2'b01) ? mem_wb.loaded_data : mem_wb.alu_result;
-		end
+		if (mem_wb_fwd && mem_wb.rd == rs1) id_regA = write_data;
+		if (mem_wb_fwd && mem_wb.rd == rs2) id_regB = write_data;
+		if (ex_mem_fwd && ex_mem.rd == rs1) id_regA = ex_mem.alu_result;
+		if (ex_mem_fwd && ex_mem.rd == rs2) id_regB = ex_mem.alu_result;
 	end
 
 	logic [63:0] ex_operandA, ex_operandB;
 	always_comb begin
 		ex_operandA=id_ex.regA; ex_operandB=id_ex.regB;
-		if (ex_mem.valid && ex_mem.control.reg_write && ex_mem.rd != 0 && !ex_mem.control.mem_read) begin
-			if (ex_mem.rd == id_ex.rs1) ex_operandA=ex_mem.alu_result;
-			if (ex_mem.rd == id_ex.rs2) ex_operandB=ex_mem.alu_result;
-		end
-		if (mem_wb.valid && mem_wb.control.reg_write && mem_wb.rd != 0) begin
-			if (mem_wb.rd == id_ex.rs1) ex_operandA=(mem_wb.control.mem_to_reg==2'b01)?mem_wb.loaded_data:mem_wb.alu_result;
-			if (mem_wb.rd == id_ex.rs2) ex_operandB=(mem_wb.control.mem_to_reg==2'b01)?mem_wb.loaded_data:mem_wb.alu_result;
-		end
+		if (mem_wb_fwd && mem_wb.rd == id_ex.rs1) ex_operandA=write_data;
+		if (mem_wb_fwd && mem_wb.rd == id_ex.rs2) ex_operandB=write_data;
+		if (ex_mem_fwd && ex_mem.rd == id_ex.rs1) ex_operandA=ex_mem.alu_result;
+		if (ex_mem_fwd && ex_mem.rd == id_ex.rs2) ex_operandB=ex_mem.alu_result;
 	end
 
 	logic [63:0] alu_a, alu_b;
@@ -1007,6 +1115,12 @@ module top
 				JAL: begin execute_target=id_ex.pc+id_ex.immediate; redirect=1'b1; redirect_pc=execute_target; execute_alu_result=id_ex.pc_plus_1; end
 				JALR: begin execute_target=(ex_operandA+id_ex.immediate)&~64'b1; redirect=1'b1; redirect_pc=execute_target; execute_alu_result=id_ex.pc_plus_1; end
 				AUIPC: execute_alu_result=id_ex.pc+id_ex.immediate;
+				// No privileged state: cycle/time/instret read a cycle counter, other CSRs read 0.
+				CSRRW,CSRRS,CSRRC,CSRRWI,CSRRSI,CSRRCI:
+					case (id_ex.instr[31:20])
+						12'hC00, 12'hC01, 12'hC02: execute_alu_result=cycle_count;
+						default: execute_alu_result=64'b0;
+					endcase
 				BEQ: if (ex_operandA==ex_operandB) begin redirect=1'b1; redirect_pc=id_ex.pc+id_ex.immediate; end
 				BNE: if (ex_operandA!=ex_operandB) begin redirect=1'b1; redirect_pc=id_ex.pc+id_ex.immediate; end
 				BLT: if ($signed(ex_operandA)<$signed(ex_operandB)) begin redirect=1'b1; redirect_pc=id_ex.pc+id_ex.immediate; end
@@ -1018,24 +1132,38 @@ module top
 		end
 	end
 
-	assign load_use_stall = id_ex.valid && id_ex.control.mem_read && if_id.valid &&
-		(id_ex.rd != 0) && ((id_ex.rd == rs1) || (id_ex.rd == rs2));
+	// Dependences on a load in ID/EX are caught one stage later by ex_dep.
+	assign load_use_stall = 1'b0;
 	assign d_read_ready = d_cpu_resp_valid;
 	assign d_write_ready = d_cpu_resp_valid;
-	assign pipeline_stall = !fetch_valid || load_use_stall ||
-		(ex_mem.valid && ex_mem.control.mem_read && !d_read_ready);
 
+	// EX/MEM holds a result EX cannot forward (load, atomic, ecall) that ID/EX
+	// needs: retire it into MEM/WB first, then forward from there.
+	wire ex_dep = ex_mem.valid && ex_mem.control.reg_write && (ex_mem.rd != 5'd0) &&
+		(ex_mem.control.mem_to_reg != 2'b00) && id_ex.valid &&
+		((ex_mem.rd == id_ex.rs1) || (ex_mem.rd == id_ex.rs2));
+
+	assign pipeline_stall = d_mem_busy || ex_dep;
+
+	// Do not redirect-flush while EX/MEM is still busy or the branch's operands are not ready.
+	wire take_redirect = redirect && !d_mem_busy && !ex_dep;
+
+	// On a split access the second response completes the load: split_lo holds the first beat.
+	wire [127:0] load_raw = split_phase ? {d_cpu_resp_rdata, split_lo} : {64'b0, d_cpu_resp_rdata};
+	wire [127:0] load_shifted = load_raw >> {mem_off, 3'b000};
 	always_comb begin
 		d_load_data='0;
 		if (ex_mem.valid) begin
 			case (ex_mem.codeword)
-				LB: d_load_data={{56{d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8+7]}},d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8 +: 8]};
-				LH: d_load_data={{48{d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8+15]}},d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8 +: 16]};
-				LW: d_load_data={{32{d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8+31]}},d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8 +: 32]};
-				LBU: d_load_data={{56{1'b0}},d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8 +: 8]};
-				LHU: d_load_data={{48{1'b0}},d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8 +: 16]};
-				LWU: d_load_data={{32{1'b0}},d_cpu_resp_rdata[ex_mem.alu_result[2:0]*8 +: 32]};
-				LD: d_load_data=d_cpu_resp_rdata;
+				LB: d_load_data={{56{load_shifted[7]}},load_shifted[7:0]};
+				LH: d_load_data={{48{load_shifted[15]}},load_shifted[15:0]};
+				LW, LR_W: d_load_data={{32{load_shifted[31]}},load_shifted[31:0]};
+				LBU: d_load_data={56'b0,load_shifted[7:0]};
+				LHU: d_load_data={48'b0,load_shifted[15:0]};
+				LWU: d_load_data={32'b0,load_shifted[31:0]};
+				LD, LR_D: d_load_data=load_shifted[63:0];
+				SC_W, SC_D: d_load_data={63'b0, sc_fail};
+				AMO_W, AMO_D: d_load_data=amo_old_val;
 				default: d_load_data=d_cpu_resp_rdata;
 			endcase
 		end
@@ -1044,22 +1172,43 @@ module top
 	always_ff @(posedge clk) begin
 		if (reset) begin
 			pc <= entry;
+			if_req_pc <= entry;
 			fetch_pc <= entry;
 			fetch_instr <= '0;
 			fetch_valid <= 1'b0;
 			i_pending <= 1'b0;
-			i_pending_pc <= '0;
+			i_pending_pc <= entry;
 			i_cancel_resp <= 1'b0;
 			d_pending <= 1'b0;
+			amo_phase <= 1'b0;
+			amo_old <= '0;
+			split_phase <= 1'b0;
+			split_lo <= '0;
+			resv_valid <= 1'b0;
+			resv_addr <= '0;
+			ecall_guard <= '0;
 			if_id <= '0; id_ex <= '0; ex_mem <= '0; mem_wb <= '0;
 		end else begin
-			if (redirect) begin
+			if (take_redirect) begin
 				pc <= redirect_pc;
+				if_req_pc <= redirect_pc;
 				fetch_valid <= 1'b0;
 				i_pending <= 1'b0;
 				i_cancel_resp <= 1'b1;
 				if_id <= '0;
 				id_ex <= '0;
+				// Older EX/MEM instruction retires (with real load data, not a struct cast).
+				mem_wb.valid <= ex_mem.valid;
+				mem_wb.instr <= ex_mem.instr;
+				mem_wb.pc <= ex_mem.pc;
+				mem_wb.pc_plus_1 <= ex_mem.pc_plus_1;
+				mem_wb.alu_result <= ex_mem.alu_result;
+				mem_wb.pc_plus_1_plus_offset <= ex_mem.pc_plus_1_plus_offset;
+				mem_wb.loaded_data <= d_load_data;
+				mem_wb.rd <= ex_mem.rd;
+				mem_wb.codeword <= ex_mem.codeword;
+				mem_wb.control <= ex_mem.control;
+				// Branch/jump occupies EX/MEM after the flush.
 				ex_mem.valid <= id_ex.valid;
 				ex_mem.instr <= id_ex.instr;
 				ex_mem.pc <= id_ex.pc;
@@ -1070,11 +1219,10 @@ module top
 				ex_mem.rd <= id_ex.rd;
 				ex_mem.codeword <= id_ex.codeword;
 				ex_mem.control <= id_ex.control;
-				mem_wb <= ex_mem;
 			end else begin
 				if (i_cpu_req_valid && i_cpu_req_ready) begin
 					i_pending <= 1'b1;
-					i_pending_pc <= pc;
+					i_pending_pc <= if_req_pc;
 				end
 				if (i_cpu_resp_valid && i_pending && !i_cancel_resp) begin
 					i_pending <= 1'b0;
@@ -1086,6 +1234,9 @@ module top
 				end else if (i_cancel_resp && i_cpu_resp_valid) begin
 					i_pending <= 1'b0;
 					i_cancel_resp <= 1'b0;
+				end else if (i_cancel_resp && !i_pending) begin
+					// Redirect cancelled before a response was outstanding.
+					i_cancel_resp <= 1'b0;
 				end
 
 				if (!pipeline_stall) begin
@@ -1094,7 +1245,8 @@ module top
 						if_id.instr <= fetch_instr;
 						if_id.pc <= fetch_pc;
 						if_id.pc_plus_1 <= fetch_pc + 64'd4;
-						pc <= redirect ? redirect_pc : fetch_pc + 64'd4;
+						pc <= fetch_pc + 64'd4;
+						if_req_pc <= fetch_pc + 64'd4;
 						fetch_valid <= 1'b0;
 					end else begin
 						if_id <= '0;
@@ -1134,34 +1286,66 @@ module top
 					mem_wb.rd <= ex_mem.rd;
 					mem_wb.codeword <= ex_mem.codeword;
 					mem_wb.control <= ex_mem.control;
-				end else if (load_use_stall) begin
-					// Hold decode/front-end; let the existing EX instruction retire to EX/MEM.
-					ex_mem.valid <= id_ex.valid;
-					ex_mem.instr <= id_ex.instr;
-					ex_mem.pc <= id_ex.pc;
-					ex_mem.pc_plus_1 <= id_ex.pc_plus_1;
-					ex_mem.alu_result <= execute_alu_result;
-					ex_mem.pc_plus_1_plus_offset <= execute_target;
-					ex_mem.regB <= ex_operandB;
-					ex_mem.rd <= id_ex.rd;
-					ex_mem.codeword <= id_ex.codeword;
-					ex_mem.control <= id_ex.control;
+				end else if (!d_mem_busy) begin
+					// ex_dep: retire EX/MEM into MEM/WB, bubble EX/MEM, hold ID/EX and IF/ID
+					// so the dependent instruction forwards from MEM/WB next cycle.
 					mem_wb.valid <= ex_mem.valid;
 					mem_wb.instr <= ex_mem.instr;
+					mem_wb.pc <= ex_mem.pc;
+					mem_wb.pc_plus_1 <= ex_mem.pc_plus_1;
 					mem_wb.alu_result <= ex_mem.alu_result;
+					mem_wb.pc_plus_1_plus_offset <= ex_mem.pc_plus_1_plus_offset;
 					mem_wb.loaded_data <= d_load_data;
 					mem_wb.rd <= ex_mem.rd;
 					mem_wb.codeword <= ex_mem.codeword;
 					mem_wb.control <= ex_mem.control;
+					ex_mem <= '0;
+					id_ex.regA <= ex_operandA;
+					id_ex.regB <= ex_operandB;
+				end else begin
+					// D-cache still busy: hold IF/ID, ID/EX and EX/MEM; WB has retired.
+					mem_wb <= '0;
+					// Capture values forwarded from WB now, since WB empties.
+					id_ex.regA <= ex_operandA;
+					id_ex.regB <= ex_operandB;
 				end
 			end
 
 			if (d_cpu_req_valid && d_cpu_req_ready) d_pending <= 1'b1;
 			if (d_cpu_resp_valid) d_pending <= 1'b0;
+
+			if (mem_is_amo && d_cpu_resp_valid && !amo_phase) begin
+				amo_old <= d_cpu_resp_rdata;
+				amo_phase <= 1'b1;
+			end else if (mem_is_amo && d_mem_done) begin
+				amo_phase <= 1'b0;
+			end
+
+			if (mem_cross && d_cpu_resp_valid && !split_phase) begin
+				split_lo <= d_cpu_resp_rdata;
+				split_phase <= 1'b1;
+			end else if (mem_cross && d_mem_done) begin
+				split_phase <= 1'b0;
+			end
+
+			if (mem_is_lr && d_mem_done) begin
+				resv_valid <= 1'b1;
+				resv_addr <= ex_mem.alu_result;
+			end else if (mem_is_sc && !d_mem_busy) begin
+				resv_valid <= 1'b0;
+			end
+
+			if (ex_mem.valid && ex_mem.codeword == ECALL)
+				ecall_guard <= 2'd3;
+			else if (ecall_guard != 2'd0)
+				ecall_guard <= ecall_guard - 2'd1;
 		end
 	end
 
-	assign i_cpu_req_valid = !i_pending && !reset;
+	// Issue at most one I-fetch at a time, and never while a fetched insn is
+	// waiting to enter IF/ID or a redirect cancel is in progress. This keeps
+	// if_req_pc (starting at entry) aligned with the instruction stream.
+	assign i_cpu_req_valid = !reset && !i_pending && !fetch_valid && !i_cancel_resp;
 
 	// Shared AXI read/write arbiter
 	typedef enum logic [2:0] {AR_IDLE, AR_D, AR_I, AR_DATA} ar_state_t;
@@ -1260,21 +1444,22 @@ module top
 		endcase
 	end
 
+	// a0-a7 as seen by the ecall in EX/MEM: the instruction in MEM/WB has not
+	// written the register file yet.
+	logic [63:0] ecall_args [0:7];
+	always_comb begin
+		for (int i = 0; i < 8; i = i + 1)
+			ecall_args[i] = (mem_wb_fwd && mem_wb.rd == 5'(10 + i)) ? write_data : syscall_args[i];
+	end
+
 	always_ff @(posedge clk) begin
 		if (!reset && ex_mem.valid && ex_mem.codeword==ECALL) begin
-			do_ecall(syscall_args[7],syscall_args[0],syscall_args[1],syscall_args[2],syscall_args[3],syscall_args[4],syscall_args[5],syscall_args[6],ecall_ret);
+			do_ecall(ecall_args[7],ecall_args[0],ecall_args[1],ecall_args[2],ecall_args[3],ecall_args[4],ecall_args[5],ecall_args[6],ecall_ret);
 		end
-		if (!reset && d_cpu_req_valid && d_cpu_req_ready) begin
-			case (ex_mem.codeword)
-				SB: do_pending_write(ex_mem.alu_result,{{56{1'b0}},ex_mem.regB[7:0]},1);
-				SH: do_pending_write(ex_mem.alu_result,{{48{1'b0}},ex_mem.regB[15:0]},2);
-				SW: do_pending_write(ex_mem.alu_result,{{32{1'b0}},ex_mem.regB[31:0]},4);
-				SD: do_pending_write(ex_mem.alu_result,ex_mem.regB,8);
-				default: begin end
-			endcase
-		end
-		if (!reset && d_pending && d_cpu_resp_valid && ex_mem.control.mem_write)
-			do_finish_write(ex_mem.alu_result, (ex_mem.codeword==SB)?1:(ex_mem.codeword==SH)?2:(ex_mem.codeword==SW)?4:(ex_mem.codeword==SD)?8:0);
+		// Report every store the D-cache accepts; the testbench calls
+		// do_finish_write itself when the line reaches DRAM.
+		if (!reset && d_cpu_req_valid && d_cpu_req_ready && d_cpu_req_write && !split_phase)
+			do_pending_write(ex_mem.alu_result, st_value, st_size);
 	end
 
 	// End simulation after falling into a run of all-zero words (treated as NOPs),
@@ -1287,7 +1472,7 @@ module top
 		mem_wb.valid && (mem_wb.instr == 32'b0);
 
 	always_ff @(posedge clk) begin
-		if (reset || redirect) begin
+		if (reset || take_redirect) begin
 			zero_instr_count <= '0;
 		end else begin
 			if (!pipeline_stall && fetch_valid) begin
